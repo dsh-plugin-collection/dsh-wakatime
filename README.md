@@ -1,5 +1,7 @@
 # dsh-wakatime
 
+English | [简体中文](./README.zh-CN.md)
+
 WakaTime heartbeat reporting for DeepSeek Harness (DSH).
 
 Track your AI-assisted coding activity and sync it to WakaTime dashboards.
