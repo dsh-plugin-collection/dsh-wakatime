@@ -37,14 +37,22 @@ DeepSeek Harness（DSH）的 WakaTime 心跳上报插件。
 dsh plugin --profile web add /path/to/dsh-wakatime-plugin
 ```
 
-### 从 GitHub 安装
+### 从 Git 仓库安装
+
+从内网 Gitea 安装：
 
 ```bash
-# 从 GitHub 安装
-dsh plugin --profile web add github:your-username/dsh-wakatime-plugin
+# 从 Gitea 安装
+dsh plugin --profile web add http://gitea.internal/dsh-plugins/dsh-wakatime-plugin.git
 
-# 安装指定 commit（出于安全考虑推荐这种方式）
-dsh plugin --profile web add github:your-username/dsh-wakatime-plugin#<commit-sha>
+# 安装固定 commit（出于安全考虑推荐这种方式）
+dsh plugin --profile web add http://gitea.internal/dsh-plugins/dsh-wakatime-plugin.git#<commit-sha>
+```
+
+或从 GitHub（或其他任意 git 托管平台）安装：
+
+```bash
+dsh plugin --profile web add github:your-username/dsh-wakatime-plugin
 ```
 
 ### 从源码构建

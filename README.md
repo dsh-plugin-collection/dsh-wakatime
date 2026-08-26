@@ -37,14 +37,22 @@ Track your AI-assisted coding activity and sync it to your [WakaTime](https://wa
 dsh plugin --profile web add /path/to/dsh-wakatime-plugin
 ```
 
-### GitHub Install
+### Git Install
+
+From the internal Gitea:
 
 ```bash
-# Install from GitHub
-dsh plugin --profile web add github:your-username/dsh-wakatime-plugin
+# Install from Gitea
+dsh plugin --profile web add http://gitea.internal/dsh-plugins/dsh-wakatime-plugin.git
 
-# Install specific commit (recommended for security)
-dsh plugin --profile web add github:your-username/dsh-wakatime-plugin#<commit-sha>
+# Install a pinned commit (recommended for security)
+dsh plugin --profile web add http://gitea.internal/dsh-plugins/dsh-wakatime-plugin.git#<commit-sha>
+```
+
+Or from GitHub (or any other git host):
+
+```bash
+dsh plugin --profile web add github:your-username/dsh-wakatime-plugin
 ```
 
 ### Build from Source
