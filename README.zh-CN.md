@@ -8,7 +8,9 @@
 
 DeepSeek Harness（DSH）的 WakaTime 心跳上报插件。
 
-追踪你的 AI 辅助编码活动，并同步到 WakaTime 面板。
+追踪你的 AI 辅助编码活动，并同步到你的 [WakaTime](https://wakatime.com) 面板。
+
+> **说明**：本项目为社区集成，与 WakaTime 官方无隶属关系。
 
 ## 功能特性
 

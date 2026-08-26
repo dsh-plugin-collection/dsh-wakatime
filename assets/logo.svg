@@ -2,7 +2,7 @@
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#2EA9F5"/>
-      <stop offset="100%" stop-color="#6C5CE7"/>
+      <stop offset="100%" stop-color="#4F71F0"/>
     </linearGradient>
     <linearGradient id="sheen" x1="0%" y1="0%" x2="0%" y2="100%">
       <stop offset="0%" stop-color="#ffffff" stop-opacity=".18"/>
@@ -25,8 +25,10 @@
   <!-- 12 o'clock tick -->
   <line x1="256" y1="164" x2="256" y2="192" stroke="#ffffff" stroke-width="18" stroke-linecap="round"/>
 
-  <!-- heartbeat pulse across the dial -->
-  <polyline points="136,308 206,308 230,252 272,352 298,284 314,308 376,308"
-            fill="none" stroke="#A6F4CF" stroke-width="20"
+  <!-- W-shaped pulse across the dial (nod to WakaTime) -->
+  <polyline points="150,258 198,344 256,272 314,344 362,258"
+            fill="none" stroke="#A6F4CF" stroke-width="22"
             stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- pulse terminal dot, like a live heartbeat marker -->
+  <circle cx="374" cy="242" r="13" fill="#A6F4CF"/>
 </svg>
