@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { resolveLanguage } from '../src/language.js';
 import { resolveProject, resolveBranch, resolveProjectRootCount, resolveDependencies, readWakatimeCfgApiKey, maskApiKey, clearResolveCaches } from '../src/project.js';
 import { calculateWriteDiff, calculateEditDiff } from '../src/diff.js';
+import { FileTracker } from '../src/tracker.js';
 import { fieldLanded, secretSlotSet } from '../src/client/mirror.js';
 import type { MirrorSnapshotLike } from '../src/client/mirror.js';
 import { existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
@@ -336,5 +337,76 @@ describe('client/mirror.ts', () => {
       expect(fieldLanded('api_url', 'text', 'https://wakatime.com', {}, { api_url: 'https://wakatime.com' }, false)).toBe(true);
       expect(fieldLanded('api_url', 'text', 'https://example.com', {}, { api_url: 'https://wakatime.com' }, false)).toBe(false);
     });
+  });
+});
+
+describe('tracker.ts GenAI metrics', () => {
+  const testDir = join(tmpdir(), 'dsh-wakatime-tracker-test-' + Date.now());
+  let tracker: FileTracker;
+
+  beforeEach(() => {
+    clearResolveCaches();
+    mkdirSync(testDir, { recursive: true });
+    const session = { id: 'sess-abc123', header: { cwd: testDir } } as any;
+    tracker = new FileTracker(session, {});
+  });
+
+  afterEach(() => {
+    rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('should attach ai tokens and ai coding category on assistant message', async () => {
+    await tracker.trackAssistantMessage({
+      type: 'assistant/message',
+      data: {
+        turn: 1,
+        step: 1,
+        message: { content: 'hello' },
+        usage: { inputTokens: 120, outputTokens: 45 },
+      },
+    } as any);
+    const pending = tracker.getPending();
+    expect(pending).toHaveLength(1);
+    expect(pending[0].category).toBe('ai coding');
+    expect(pending[0].ai_input_tokens).toBe(120);
+    expect(pending[0].ai_output_tokens).toBe(45);
+    expect(pending[0].ai_session).toBe('sess-abc123');
+    // 未追踪用户消息时不应带 prompt 长度
+    expect(pending[0].ai_prompt_length).toBeUndefined();
+  });
+
+  it('should carry user prompt length into the next assistant heartbeat', async () => {
+    await tracker.trackUserMessage({ type: 'user/message', data: { content: '帮我看看这段代码' } } as any);
+    await tracker.trackAssistantMessage({
+      type: 'assistant/message',
+      data: {
+        turn: 1,
+        step: 1,
+        message: { content: 'ok' },
+        usage: { inputTokens: 10, outputTokens: 5 },
+      },
+    } as any);
+    const pending = tracker.getPending();
+    const assistant = pending.find((h) => h.category === 'ai coding');
+    expect(assistant).toBeDefined();
+    expect(assistant!.ai_prompt_length).toBe('帮我看看这段代码'.length);
+  });
+
+  it('should omit token fields when usage is missing', async () => {
+    await tracker.trackAssistantMessage({
+      type: 'assistant/message',
+      data: { turn: 2, step: 1, message: { content: 'no usage' } },
+    } as any);
+    const pending = tracker.getPending();
+    expect(pending[0].category).toBe('ai coding');
+    expect(pending[0].ai_input_tokens).toBeUndefined();
+    expect(pending[0].ai_output_tokens).toBeUndefined();
+  });
+
+  it('should keep communicating category for user messages', async () => {
+    await tracker.trackUserMessage({ type: 'user/message', data: { content: 'hi' } } as any);
+    const pending = tracker.getPending();
+    expect(pending[0].category).toBe('communicating');
+    expect(pending[0].entity).toBe('dsh-session-sess-abc123');
   });
 });

@@ -24,6 +24,12 @@ interface UserMessageEvent {
   };
 }
 
+/** @deepseek-ai/dsh-llm TokenUsage 的结构子集（避免引入未声明依赖） */
+interface TokenUsageLike {
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
 interface AssistantMessageEvent {
   type: 'assistant/message';
   data: {
@@ -32,7 +38,7 @@ interface AssistantMessageEvent {
     message: {
       content: string;
     };
-    usage?: any;
+    usage?: TokenUsageLike;
   };
 }
 
@@ -50,6 +56,8 @@ export class FileTracker {
   private pending: Map<string, WakaTimeHeartbeat> = new Map();
   /** 在途的追踪任务：flush 前须等齐，否则迟到的条目会滞留到下一个周期。 */
   private inflight: Set<Promise<void>> = new Set();
+  /** 最近一条用户消息的字符数，随下一条 assistant 心跳作为 ai_prompt_length 上报。 */
+  private lastPromptLength?: number;
 
   constructor(session: Session, config: TrackerConfig) {
     this.session = session;
@@ -131,7 +139,9 @@ export class FileTracker {
     }
   }
 
-  private async trackUserMessageInner(_event: UserMessageEvent): Promise<void> {
+  private async trackUserMessageInner(event: UserMessageEvent): Promise<void> {
+    const content = typeof event?.data?.content === 'string' ? event.data.content : '';
+    this.lastPromptLength = content.length > 0 ? content.length : undefined;
     const heartbeat: WakaTimeHeartbeat = {
       entity: `dsh-session-${this.session.id}`,
       type: 'app',
@@ -143,15 +153,28 @@ export class FileTracker {
     this.pending.set(`user-${Date.now()}`, heartbeat);
   }
 
-  private async trackAssistantMessageInner(_event: AssistantMessageEvent): Promise<void> {
+  private async trackAssistantMessageInner(event: AssistantMessageEvent): Promise<void> {
+    const usage = event?.data?.usage;
     const heartbeat: WakaTimeHeartbeat = {
       entity: `dsh-session-${this.session.id}`,
       type: 'app',
-      category: 'communicating',
+      // WakaTime 为 GenAI 活动提供的专用类别，驱动其 AI Coding 面板统计
+      category: 'ai coding',
       time: Date.now() / 1000,
       project: await this.resolveProject(),
       is_write: false,
+      ai_session: String(this.session.id),
     };
+    if (usage && typeof usage.inputTokens === 'number') {
+      heartbeat.ai_input_tokens = usage.inputTokens;
+    }
+    if (usage && typeof usage.outputTokens === 'number') {
+      heartbeat.ai_output_tokens = usage.outputTokens;
+    }
+    if (this.lastPromptLength != null) {
+      heartbeat.ai_prompt_length = this.lastPromptLength;
+      this.lastPromptLength = undefined;
+    }
     this.pending.set(`assistant-${Date.now()}`, heartbeat);
   }
 

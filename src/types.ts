@@ -15,6 +15,14 @@ export interface WakaTimeHeartbeat {
   line_additions?: number;
   line_deletions?: number;
   is_write?: boolean;
+  /** GenAI 指标（WakaTime 心跳可选字段）：本次会话 id */
+  ai_session?: string;
+  /** 距上一心跳消耗的输入 token */
+  ai_input_tokens?: number;
+  /** 距上一心跳消耗的输出 token */
+  ai_output_tokens?: number;
+  /** 距上一心跳的用户提示字符数 */
+  ai_prompt_length?: number;
 }
 
 /**

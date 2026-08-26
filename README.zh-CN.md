@@ -19,6 +19,7 @@ DeepSeek Harness（DSH）的 WakaTime 心跳上报插件。
 - **分支追踪** —— 上报当前工作的 git 分支
 - **语言推断** —— 根据文件扩展名识别编程语言
 - **行数统计** —— write/edit 操作上报新增/删除行数
+- **AI token 上报** —— assistant 回复的心跳携带 `ai_input_tokens` / `ai_output_tokens` / `ai_prompt_length` / `ai_session`（WakaTime GenAI 指标）；需开启 **Track AI Messages** 才生效
 - **心跳合并** —— 5 秒内对同一文件的连续操作自动合并
 - **批量发送** —— 单次 HTTP 请求最多携带 25 条心跳（WakaTime 上限）
 - **请求超时** —— 所有 HTTP 请求（10 秒）与 git 探测（5 秒）都有硬超时，挂起的端点永远不会阻塞冲刷
@@ -147,6 +148,8 @@ api_key = sk-xxxxxxxxxxxx
 | `workflow` | `coding` | false |
 | `todo_write` | `coding` | false |
 | `ask_user_question` | `communicating` | false |
+| 用户消息事件 | `communicating` | false |
+| AI 回复事件 | `ai coding` | false |
 | `skill` | `learning` | false |
 | 其他 | `coding` | false |
 

@@ -19,6 +19,7 @@ Track your AI-assisted coding activity and sync it to your [WakaTime](https://wa
 - **Branch tracking** — reports which git branch you're working on
 - **Language inference** — detects programming language from file extension
 - **Line statistics** — reports additions/deletions for write/edit operations
+- **AI token reporting** — attaches `ai_input_tokens` / `ai_output_tokens` / `ai_prompt_length` / `ai_session` to assistant heartbeats (WakaTime GenAI metrics); enable **Track AI Messages** to activate
 - **Heartbeat merging** — coalesces rapid operations on the same file within 5 seconds
 - **Batch sending** — sends up to 25 heartbeats per HTTP request (WakaTime limit)
 - **Request timeouts** — every HTTP request (10s) and git probe (5s) has a hard timeout, so a hanging endpoint can never stall flushing
@@ -147,6 +148,8 @@ api_key = sk-xxxxxxxxxxxx
 | `workflow` | `coding` | false |
 | `todo_write` | `coding` | false |
 | `ask_user_question` | `communicating` | false |
+| user message event | `communicating` | false |
+| assistant message event | `ai coding` | false |
 | `skill` | `learning` | false |
 | other | `coding` | false |
 
