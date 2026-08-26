@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.svg" width="128" alt="dsh-wakatime logo"/>
+</p>
+
 # dsh-wakatime
 
 [English](./README.md) | 简体中文
