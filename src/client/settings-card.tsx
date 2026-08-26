@@ -8,6 +8,10 @@
  * → 输入控件 → 提示」三段式；非法草稿阻塞保存；保存后回读校验，未落地的
  * 草稿保留并报错；secret 字段只显示配置状态、空白草稿不写入。
  *
+ * 文案语言：全部微文案（分组头/label/hint/按钮/徽章/错误）经 `useWkT`
+ * 跟随宿主 DSH 的界面语言（zh/en 双语字典见 strings.ts），语言切换实时
+ * 重渲染；宿主缺 locale 服务时回退中文。字段定义只存 key/形态/分组 id。
+ *
  * secret 回读的特别说明：settings 线路契约对 `role('secret')` 字段全程脱敏
  * （value/base/user 三层都不携带），因此 secret 是否落地、是否已配置，只能
  * 经共享 describe 镜像的 `secrets` 槽位列表（`{ path, set }`）观察。普通字段
@@ -18,37 +22,42 @@
 import { useEffect, useState } from 'react';
 import type { FieldKind, MirrorSnapshotLike, ScopeLike, SettingsMirrorFace } from './mirror.ts';
 import { fieldLanded, secretSlotSet } from './mirror.ts';
+import type { WkFieldKey, WkSectionId, WkStrings } from './strings.ts';
+import { format } from './strings.ts';
+import { useWkT, type LocaleFaceLike } from './useWkT.ts';
 
 export type { FieldKind } from './mirror.ts';
 export type { MirrorSnapshotLike, ScopeLike, SettingsMirrorFace } from './mirror.ts';
 export { fieldLanded, secretSlotSet } from './mirror.ts';
+export type { LocaleFaceLike } from './useWkT.ts';
 
-/** 配置字段定义（key / 显示名 / 提示 / 输入形态 / 所属分组）。 */
+/** 配置字段定义（key / 输入形态 / 所属分组 id）；label/hint 经字典按 key 解析。 */
 export const WAKATIME_FIELDS: ReadonlyArray<{
-  readonly key: string;
-  readonly label: string;
-  readonly hint: string;
+  readonly key: WkFieldKey;
   readonly kind: FieldKind;
-  readonly section: string;
+  readonly section: WkSectionId;
   /** number 形态的合法闭区间；undefined 表示不校验。 */
   readonly min?: number;
   readonly max?: number;
 }> = [
   // —— API ——
-  { key: 'api_key', label: 'API Key', hint: 'WakaTime 密钥；留空时回退环境变量与 ~/.wakatime.cfg', kind: 'secret', section: 'API' },
-  { key: 'api_url', label: 'API URL', hint: '自托管端点；留空使用官方 wakatime.com', kind: 'text', section: 'API' },
+  { key: 'api_key', kind: 'secret', section: 'api' },
+  { key: 'api_url', kind: 'text', section: 'api' },
   // —— 追踪 ——
-  { key: 'heartbeat_interval_ms', label: '心跳间隔（毫秒）', hint: '60000–300000；批量发送的节拍', kind: 'number', section: '追踪', min: 60000, max: 300000 },
-  { key: 'include_tool_calls', label: '追踪工具调用', hint: '记录文件读写、命令执行等工具调用', kind: 'boolean', section: '追踪' },
-  { key: 'include_user_messages', label: '追踪用户消息', hint: '记录用户消息（增加心跳量）', kind: 'boolean', section: '追踪' },
-  { key: 'include_assistant_messages', label: '追踪 AI 消息', hint: '记录 AI 回复（增加心跳量）', kind: 'boolean', section: '追踪' },
-  { key: 'project_name', label: '项目名称', hint: '覆盖自动检测的项目名', kind: 'text', section: '追踪' },
-  { key: 'language', label: '语言', hint: '覆盖自动检测的语言', kind: 'text', section: '追踪' },
+  { key: 'heartbeat_interval_ms', kind: 'number', section: 'tracking', min: 60000, max: 300000 },
+  { key: 'include_tool_calls', kind: 'boolean', section: 'tracking' },
+  { key: 'include_user_messages', kind: 'boolean', section: 'tracking' },
+  { key: 'include_assistant_messages', kind: 'boolean', section: 'tracking' },
+  { key: 'project_name', kind: 'text', section: 'tracking' },
+  { key: 'language', kind: 'text', section: 'tracking' },
   // —— 缓存与调试 ——
-  { key: 'cache_heartbeats', label: '缓存失败心跳', hint: '网络失败时落盘，恢复后重发', kind: 'boolean', section: '缓存与调试' },
-  { key: 'cache_limit', label: '缓存上限', hint: '10–1000；最多缓存的条数', kind: 'number', section: '缓存与调试', min: 10, max: 1000 },
-  { key: 'debug', label: '调试模式', hint: '输出详细日志到 DSH 控制台', kind: 'boolean', section: '缓存与调试' },
+  { key: 'cache_heartbeats', kind: 'boolean', section: 'cacheDebug' },
+  { key: 'cache_limit', kind: 'number', section: 'cacheDebug', min: 10, max: 1000 },
+  { key: 'debug', kind: 'boolean', section: 'cacheDebug' },
 ];
+
+/** 分组渲染顺序（标题文案经字典 sections 表解析）。 */
+const SECTIONS: ReadonlyArray<WkSectionId> = ['api', 'tracking', 'cacheDebug'];
 
 /** settings 命名空间（与 host 端一致）。 */
 const SETTINGS_NAMESPACE = 'wakatime';
@@ -58,6 +67,8 @@ export interface WakaTimeCardProps {
   scope: ScopeLike;
   /** 共享 describe 镜像面：secret 槽位的配置状态只经此观察（线路对 secret 脱敏）。 */
   mirror?: SettingsMirrorFace;
+  /** 宿主 locale 服务（可选）：卡片文案跟随宿主界面语言，缺失回退中文。 */
+  locale?: LocaleFaceLike;
 }
 
 /** 官方同款样式表（类名加 wk- 前缀避免冲突；变量在暗/亮主题下均受支持）。 */
@@ -143,24 +154,26 @@ function displayValue(v: unknown): string {
 }
 
 /** 文本/数值字段：label 行（覆盖徽章 + 重置）→ 输入框 → 提示/错误。 */
-function ValueField({ id, def, text, invalid, overridden, disabled, onEdit, onReset }: {
+function ValueField({ id, def, text, invalid, overridden, disabled, t, onEdit, onReset }: {
   id: string;
   def: (typeof WAKATIME_FIELDS)[number];
   text: string;
   invalid: boolean;
   overridden: boolean;
   disabled: boolean;
+  t: WkStrings;
   onEdit: (text: string) => void;
   onReset: () => void;
 }) {
+  const copy = t.fields[def.key];
   return (
     <div className="wk-field">
       <div className="wk-head">
-        <label className="wk-label" htmlFor={id}>{def.label}</label>
+        <label className="wk-label" htmlFor={id}>{copy.label}</label>
         {overridden ? (
           <span className="wk-badges">
-            <span className="wk-badge">已覆盖</span>
-            <button type="button" className="wk-reset" disabled={disabled} onClick={onReset}>重置</button>
+            <span className="wk-badge">{t.overridden}</span>
+            <button type="button" className="wk-reset" disabled={disabled} onClick={onReset}>{t.reset}</button>
           </span>
         ) : null}
       </div>
@@ -177,30 +190,32 @@ function ValueField({ id, def, text, invalid, overridden, disabled, onEdit, onRe
         onChange={(e) => onEdit(e.target.value)}
       />
       <p className={invalid ? 'wk-invalid' : 'wk-hint'}>
-        {invalid ? `需为 ${def.min}–${def.max} 的整数` : def.hint}
+        {invalid ? format(t.invalidRange, { min: def.min ?? '', max: def.max ?? '' }) : copy.hint}
       </p>
     </div>
   );
 }
 
 /** 布尔字段：官方卡片无数值外的专用控件，这里用同款样式的下拉框。 */
-function BooleanField({ id, def, text, overridden, disabled, onEdit, onReset }: {
+function BooleanField({ id, def, text, overridden, disabled, t, onEdit, onReset }: {
   id: string;
   def: (typeof WAKATIME_FIELDS)[number];
   text: string;
   overridden: boolean;
   disabled: boolean;
+  t: WkStrings;
   onEdit: (text: string) => void;
   onReset: () => void;
 }) {
+  const copy = t.fields[def.key];
   return (
     <div className="wk-field">
       <div className="wk-head">
-        <label className="wk-label" htmlFor={id}>{def.label}</label>
+        <label className="wk-label" htmlFor={id}>{copy.label}</label>
         {overridden ? (
           <span className="wk-badges">
-            <span className="wk-badge">已覆盖</span>
-            <button type="button" className="wk-reset" disabled={disabled} onClick={onReset}>重置</button>
+            <span className="wk-badge">{t.overridden}</span>
+            <button type="button" className="wk-reset" disabled={disabled} onClick={onReset}>{t.reset}</button>
           </span>
         ) : null}
       </div>
@@ -211,30 +226,32 @@ function BooleanField({ id, def, text, overridden, disabled, onEdit, onReset }: 
         disabled={disabled}
         onChange={(e) => onEdit(e.target.value)}
       >
-        <option value="true">开启</option>
-        <option value="false">关闭</option>
+        <option value="true">{t.on}</option>
+        <option value="false">{t.off}</option>
       </select>
-      <p className="wk-hint">{def.hint}</p>
+      <p className="wk-hint">{copy.hint}</p>
     </div>
   );
 }
 
 /** secret 字段：值不回显，只报配置状态；空白草稿不写入（保留已存密钥）。 */
-function SecretField({ id, def, text, configured, disabled, onEdit }: {
+function SecretField({ id, def, text, configured, disabled, t, onEdit }: {
   id: string;
   def: (typeof WAKATIME_FIELDS)[number];
   text: string;
   configured: boolean;
   disabled: boolean;
+  t: WkStrings;
   onEdit: (text: string) => void;
 }) {
+  const copy = t.fields[def.key];
   return (
     <div className="wk-field">
       <div className="wk-head">
-        <label className="wk-label" htmlFor={id}>{def.label}</label>
+        <label className="wk-label" htmlFor={id}>{copy.label}</label>
         <span className="wk-badges">
           <span className={configured ? 'wk-badge' : 'wk-badgeMuted'}>
-            {configured ? '已配置' : '未配置'}
+            {configured ? t.configured : t.notConfigured}
           </span>
         </span>
       </div>
@@ -247,14 +264,16 @@ function SecretField({ id, def, text, configured, disabled, onEdit }: {
         disabled={disabled}
         onChange={(e) => onEdit(e.target.value)}
       />
-      <p className="wk-hint">{def.hint}</p>
+      <p className="wk-hint">{copy.hint}</p>
     </div>
   );
 }
 
 /** 设置卡片主组件：staged 编辑 + 保存/放弃 + 回读校验。 */
-export function WakaTimeCard({ scope, mirror }: WakaTimeCardProps): React.ReactElement | null {
+export function WakaTimeCard({ scope, mirror, locale }: WakaTimeCardProps): React.ReactElement | null {
   ensureStyles();
+  // 文案语言：订阅宿主 locale 快照，语言切换实时重渲染（缺失回退中文）。
+  const { t } = useWkT(locale);
   const [snap, setSnap] = useState(scope.getSnapshot());
   useEffect(() => scope.subscribe(() => setSnap(scope.getSnapshot())), [scope]);
   // 镜像订阅：secret 槽位的 set 状态只在镜像视图里翻转，保存后徽章据此刷新。
@@ -262,7 +281,7 @@ export function WakaTimeCard({ scope, mirror }: WakaTimeCardProps): React.ReactE
   useEffect(() => {
     if (!mirror) return;
     void mirror.ensure?.();
-    return mirror.subscribe(() => bumpMirror(t => t + 1));
+    return mirror.subscribe(() => bumpMirror(c => c + 1));
   }, [mirror]);
   const [edits, setEdits] = useState<Edits>({});
   const [saving, setSaving] = useState(false);
@@ -364,7 +383,7 @@ export function WakaTimeCard({ scope, mirror }: WakaTimeCardProps): React.ReactE
   };
 
   /** 按分组顺序渲染字段。 */
-  const renderSection = (section: string): React.ReactElement[] =>
+  const renderSection = (section: WkSectionId): React.ReactElement[] =>
     WAKATIME_FIELDS.filter(f => f.section === section).map((f) => {
       const id = `plugin-config-wakatime-${f.key}`;
       const text = fieldValue(f.key);
@@ -373,8 +392,8 @@ export function WakaTimeCard({ scope, mirror }: WakaTimeCardProps): React.ReactE
           <SecretField
             key={f.key} id={id} def={f} text={'api_key' in edits ? edits.api_key : ''}
             configured={secretSlotSet(mirror?.getSnapshot(), SETTINGS_NAMESPACE, f.key)}
-            disabled={!writable || saving}
-            onEdit={(t) => edit(f.key, t)}
+            disabled={!writable || saving} t={t}
+            onEdit={(tt) => edit(f.key, tt)}
           />
         );
       }
@@ -382,8 +401,8 @@ export function WakaTimeCard({ scope, mirror }: WakaTimeCardProps): React.ReactE
         return (
           <BooleanField
             key={f.key} id={id} def={f} text={text}
-            overridden={isOverridden(f.key)} disabled={!writable || saving}
-            onEdit={(t) => edit(f.key, t)} onReset={() => resetField(f.key)}
+            overridden={isOverridden(f.key)} disabled={!writable || saving} t={t}
+            onEdit={(tt) => edit(f.key, tt)} onReset={() => resetField(f.key)}
           />
         );
       }
@@ -391,13 +410,11 @@ export function WakaTimeCard({ scope, mirror }: WakaTimeCardProps): React.ReactE
         <ValueField
           key={f.key} id={id} def={f} text={text}
           invalid={invalidKeys.has(f.key)} overridden={isOverridden(f.key)}
-          disabled={!writable || saving}
-          onEdit={(t) => edit(f.key, t)} onReset={() => resetField(f.key)}
+          disabled={!writable || saving} t={t}
+          onEdit={(tt) => edit(f.key, tt)} onReset={() => resetField(f.key)}
         />
       );
     });
-
-  const sections = ['API', '追踪', '缓存与调试'];
 
   return (
     <li className={open ? 'wk-card wk-cardOpen' : 'wk-card'}>
@@ -405,30 +422,30 @@ export function WakaTimeCard({ scope, mirror }: WakaTimeCardProps): React.ReactE
         type="button"
         className="wk-header"
         aria-expanded={open}
-        aria-label={`${open ? '折叠' : '展开'}：WakaTime`}
+        aria-label={open ? t.ariaCollapse : t.ariaExpand}
         onClick={() => setOpen(o => !o)}
       >
         <span className="wk-headText">
           <span className="wk-name">WakaTime</span>
-          <span className="wk-description">编码活动统计：文件级心跳同步到 WakaTime 仪表板</span>
+          <span className="wk-description">{t.description}</span>
         </span>
-        {dirty ? <span className="wk-pending">未保存</span> : null}
+        {dirty ? <span className="wk-pending">{t.unsavedBadge}</span> : null}
         <ChevronDown className={open ? 'wk-chevron wk-chevronOpen' : 'wk-chevron'} />
       </button>
       {open ? (
         <div className="wk-body">
-          {!writable ? <p className="wk-readOnly" role="status">当前部署不可写（内存模式）</p> : null}
-          {sections.map((s, i) => (
+          {!writable ? <p className="wk-readOnly" role="status">{t.readOnlyNote}</p> : null}
+          {SECTIONS.map((s, i) => (
             <div key={s}>
-              {i > 0 || true ? <div className="wk-section">{s}</div> : null}
+              {i > 0 || true ? <div className="wk-section">{t.sections[s]}</div> : null}
               {renderSection(s)}
             </div>
           ))}
           <div className="wk-footer">
-            {failed ? <p className="wk-failed" role="status">保存未落地，请检查后重试</p> : null}
-            <button type="button" className="wk-discard" disabled={!dirty || saving} onClick={discard}>放弃修改</button>
+            {failed ? <p className="wk-failed" role="status">{t.saveFailed}</p> : null}
+            <button type="button" className="wk-discard" disabled={!dirty || saving} onClick={discard}>{t.discard}</button>
             <button type="button" className="wk-save" disabled={blocked} onClick={() => void save()}>
-              {saving ? '保存中…' : '保存'}
+              {saving ? t.saving : t.save}
             </button>
           </div>
         </div>
