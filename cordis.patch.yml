@@ -1,0 +1,15 @@
+- insert:
+    - id: dsh-wakatime
+      name: 'dsh-wakatime'
+      config:
+        api_key: !!js process.env.WAKATIME_API_KEY || ''
+        api_url: !!js process.env.WAKATIME_API_URL || 'https://wakatime.com'
+        heartbeat_interval_ms: 120000
+        project_name: ''
+        language: ''
+        include_tool_calls: true
+        include_user_messages: false
+        include_assistant_messages: false
+        cache_heartbeats: true
+        cache_limit: 100
+        debug: false

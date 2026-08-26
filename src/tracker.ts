@@ -1,0 +1,223 @@
+import { WakaTimeHeartbeat, TOOL_CATEGORY_MAP, WRITE_TOOLS, MCP_DEBUGGING_PREFIX, DiffResult } from './types.js';
+import { resolveLanguage } from './language.js';
+import { resolveProject, resolveBranch, resolveProjectRootCount, resolveDependencies } from './project.js';
+import { calculateWriteDiff, calculateEditDiff } from './diff.js';
+import type { Session } from '@deepseek-ai/dsh-session';
+
+// DSH session event types (from @deepseek-ai/dsh-session)
+// session/event passes the event object with { type, data } wrapper
+interface ToolCallEvent {
+  type: 'tool/call';
+  data: {
+    turn: number;
+    step: number;
+    callId: string;
+    name: string;
+    arguments: string; // JSON string
+  };
+}
+
+interface UserMessageEvent {
+  type: 'user/message';
+  data: {
+    content: string;
+  };
+}
+
+interface AssistantMessageEvent {
+  type: 'assistant/message';
+  data: {
+    turn: number;
+    step: number;
+    message: {
+      content: string;
+    };
+    usage?: any;
+  };
+}
+
+/** FileTracker 需要的配置切片；传入共享的 runtime 配置对象即获得实时更新。 */
+export interface TrackerConfig {
+  /** 覆盖自动检测的项目名 */
+  project_name?: string;
+  /** 覆盖自动检测的语言 */
+  language?: string;
+}
+
+export class FileTracker {
+  private session: Session;
+  private config: TrackerConfig;
+  private pending: Map<string, WakaTimeHeartbeat> = new Map();
+  /** 在途的追踪任务：flush 前须等齐，否则迟到的条目会滞留到下一个周期。 */
+  private inflight: Set<Promise<void>> = new Set();
+
+  constructor(session: Session, config: TrackerConfig) {
+    this.session = session;
+    this.config = config;
+  }
+
+  /** 等待所有在途追踪任务落袋（含等待期间新启动的）。 */
+  async idle(): Promise<void> {
+    while (this.inflight.size > 0) {
+      await Promise.allSettled([...this.inflight]);
+    }
+  }
+
+  trackToolCall(event: ToolCallEvent): Promise<void> {
+    return this.tracked(this.trackToolCallInner(event));
+  }
+
+  trackUserMessage(event: UserMessageEvent): Promise<void> {
+    return this.tracked(this.trackUserMessageInner(event));
+  }
+
+  trackAssistantMessage(event: AssistantMessageEvent): Promise<void> {
+    return this.tracked(this.trackAssistantMessageInner(event));
+  }
+
+  /** 登记在途任务；返回原 promise，拒绝语义与直接调用保持一致。 */
+  private tracked(p: Promise<void>): Promise<void> {
+    this.inflight.add(p);
+    void p.catch(() => {}).finally(() => { this.inflight.delete(p); });
+    return p;
+  }
+
+  private async trackToolCallInner(event: ToolCallEvent): Promise<void> {
+    const { name, arguments: argsJson } = event.data;
+    
+    // Parse arguments JSON string
+    let args: any = {};
+    try {
+      args = JSON.parse(argsJson || '{}');
+    } catch {
+      args = {};
+    }
+    
+    const category = this.resolveCategory(name);
+    const isWrite = WRITE_TOOLS.has(name);
+    const entity = this.extractEntity(name, args);
+
+    if (!entity) return;
+
+    const heartbeat: WakaTimeHeartbeat = {
+      entity,
+      type: name === 'bash' || name === 'pwsh' ? 'app' : 'file',
+      category,
+      time: Date.now() / 1000,
+      project: await this.resolveProject(),
+      project_root_count: await this.resolveProjectRootCount(),
+      branch: await this.resolveBranch(),
+      language: await this.resolveLanguage(entity, name),
+      dependencies: await this.resolveDependencies(),
+      is_write: isWrite,
+    };
+
+    if (isWrite) {
+      const diff = await this.calculateDiff(name, args, entity);
+      if (diff) {
+        heartbeat.lines = diff.lines;
+        heartbeat.line_additions = diff.lineAdditions;
+        heartbeat.line_deletions = diff.lineDeletions;
+      }
+    }
+
+    // Merge with existing heartbeat for same entity within 5 seconds
+    const existing = this.pending.get(entity);
+    if (existing && (heartbeat.time - existing.time) < 5) {
+      Object.assign(existing, heartbeat);
+      existing.time = heartbeat.time;
+    } else {
+      this.pending.set(entity, heartbeat);
+    }
+  }
+
+  private async trackUserMessageInner(_event: UserMessageEvent): Promise<void> {
+    const heartbeat: WakaTimeHeartbeat = {
+      entity: `dsh-session-${this.session.id}`,
+      type: 'app',
+      category: 'communicating',
+      time: Date.now() / 1000,
+      project: await this.resolveProject(),
+      is_write: false,
+    };
+    this.pending.set(`user-${Date.now()}`, heartbeat);
+  }
+
+  private async trackAssistantMessageInner(_event: AssistantMessageEvent): Promise<void> {
+    const heartbeat: WakaTimeHeartbeat = {
+      entity: `dsh-session-${this.session.id}`,
+      type: 'app',
+      category: 'communicating',
+      time: Date.now() / 1000,
+      project: await this.resolveProject(),
+      is_write: false,
+    };
+    this.pending.set(`assistant-${Date.now()}`, heartbeat);
+  }
+
+  getPending(): WakaTimeHeartbeat[] {
+    return Array.from(this.pending.values());
+  }
+
+  clearPending(): void {
+    this.pending.clear();
+  }
+
+  private resolveCategory(toolName: string): string {
+    if (!toolName) return 'coding';
+    if (toolName.startsWith(MCP_DEBUGGING_PREFIX)) {
+      return 'debugging';
+    }
+    return TOOL_CATEGORY_MAP[toolName] || 'coding';
+  }
+
+  private extractEntity(toolName: string, args: any): string | null {
+    if (!args) return null;
+    if (toolName === 'bash' || toolName === 'pwsh') {
+      return args.command || null;
+    }
+    if (args.file_path) return args.file_path;
+    if (args.path) return args.path;
+    if (args.target_file) return args.target_file;
+    if (args.entity) return args.entity;
+    return null;
+  }
+
+  private async resolveProject(): Promise<string> {
+    if (this.config.project_name) return this.config.project_name;
+    const cwd = this.session.header?.cwd || process.cwd();
+    return await resolveProject(cwd);
+  }
+
+  private async resolveProjectRootCount(): Promise<number> {
+    const cwd = this.session.header?.cwd || process.cwd();
+    return await resolveProjectRootCount(cwd);
+  }
+
+  private async resolveBranch(): Promise<string> {
+    const cwd = this.session.header?.cwd || process.cwd();
+    return await resolveBranch(cwd);
+  }
+
+  private async resolveLanguage(entity: string, toolName: string): Promise<string> {
+    if (this.config.language) return this.config.language;
+    if (toolName === 'bash' || toolName === 'pwsh') return 'Shell';
+    return resolveLanguage(entity);
+  }
+
+  private async resolveDependencies(): Promise<string[]> {
+    const cwd = this.session.header?.cwd || process.cwd();
+    return await resolveDependencies(cwd);
+  }
+
+  private async calculateDiff(toolName: string, args: any, entity: string): Promise<DiffResult | null> {
+    if (!args) return null;
+    if (toolName === 'write') {
+      return calculateWriteDiff(args.content || '');
+    }
+    if (toolName === 'edit') {
+      return calculateEditDiff(args.old_string || '', args.new_string || '');
+    }
+    return null;
+  }
+}
