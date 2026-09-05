@@ -29,6 +29,18 @@ Track your AI-assisted coding activity and sync it to your [WakaTime](https://wa
 - **Local caching** — caches failed heartbeats locally, retries on next successful send
 - **WebUI configuration** — configure all settings from the WebUI settings panel (no need to edit config files)
 
+## Compatibility
+
+The plugin is a bridge between two systems: it runs **inside DSH** and speaks the **WakaTime API**.
+
+| Side | Compatibility |
+|---|---|
+| **DSH (DeepSeek Harness)** | Runs as a DSH plugin on the web profile; peer deps pinned to `@deepseek-ai/dsh-*` `^0.1.1-rc.2`; Node >= 22.19 (including 24+); Windows / macOS / Linux |
+| **WakaTime cloud** | Works with wakatime.com out of the box (Heartbeat API v1) |
+| **Self-hosted WakaTime** | Supported via the **API URL** setting — any WakaTime-compatible server |
+| **WakaTime ecosystem** | Reads the standard `~/.wakatime.cfg`, so an existing API key is picked up automatically |
+| **Other telemetry plugins** | Use one heartbeat backend per DSH profile; don't enable alongside similar plugins (e.g. codetime) |
+
 ## Installation
 
 ### Local Development Install

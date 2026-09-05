@@ -29,6 +29,18 @@ DeepSeek Harness（DSH）的 WakaTime 心跳上报插件。
 - **本地缓存** —— 发送失败的心跳写入本地缓存，下次成功发送时自动重试
 - **WebUI 配置** —— 全部设置可在 WebUI 设置面板中完成（无需手动编辑配置文件）
 
+## 兼容性
+
+本插件是两个系统之间的桥梁：运行在 **DSH 内部**，对接 **WakaTime API**。
+
+| 端 | 兼容性 |
+|---|---|
+| **DSH（DeepSeek Harness）** | 以 DSH 插件形式运行于 web profile；peer 依赖锁定 `@deepseek-ai/dsh-*` `^0.1.1-rc.2`；Node ≥ 22.19（含 24+）；Windows / macOS / Linux 全支持 |
+| **WakaTime 云端** | 开箱即用对接 wakatime.com（心跳 API v1） |
+| **自托管 WakaTime** | 通过 **API URL** 设置支持任意 WakaTime 兼容服务端 |
+| **WakaTime 生态** | 自动读取标准 `~/.wakatime.cfg`，已有 API Key 无需重复配置 |
+| **其他遥测插件** | 每个 DSH profile 只保留一个心跳后端，请勿与同类插件（如 codetime）同时启用 |
+
 ## 安装
 
 ### 本地开发安装
