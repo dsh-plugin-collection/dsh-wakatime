@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>dsh-wakatime logo 方案对比</title>
+<style>
+  body { margin: 0; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .section { padding: 18px 28px 10px; }
+  .light { background: #f5f6f8; color: #222; }
+  .dark  { background: #101418; color: #eee; }
+  h1 { font-size: 16px; margin: 8px 0 2px; }
+  .hint { font-size: 12px; opacity: .6; margin: 0 0 10px; }
+  .variant { margin-bottom: 4px; }
+  .vhead { display: flex; align-items: baseline; gap: 10px; margin: 6px 0; }
+  .vname { font-size: 14px; font-weight: 600; }
+  .vdesc { font-size: 12px; opacity: .65; }
+  .row { display: flex; align-items: flex-end; gap: 28px; }
+  .cell { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .cell img { display: block; }
+  .cell span { font-size: 11px; opacity: .6; }
+  .round { border-radius: 50%; }
+</style>
+</head>
+<body>
+<div class="section light" id="light"></div>
+<div class="section dark" id="dark"></div>
+<script>
+  const variants = [
+    { file: 'logo.svg',      name: '旧版(对照)', desc: '双主体重叠 + 黑盘 + 薄荷弧线' },
+    { file: 'logo-new.svg',  name: '新版 · 方案 A 鲸鱼踏浪(已上线)', desc: 'DSH 鲸鱼为主,WakaTime W 折线化作脚下心跳浪;浪缩小、间距加大' },
+    { file: 'logo-v2-b.svg', name: '方案 B(备选)', desc: '修正双区:鲸鱼主导,白描边 W 环独立角落' },
+    { file: 'logo-v2-c.svg', name: '方案 C(备选)', desc: 'W 环极简,16px 可辨性最强' },
+  ];
+  const sizes = [256, 128, 64, 32, 16];
+  for (const [id, theme] of [['light', 'light'], ['dark', 'dark']]) {
+    const root = document.getElementById(id);
+    root.innerHTML = `<h1>dsh-wakatime logo 重设计预览(${theme === 'light' ? '浅色背景' : '深色背景'})</h1>
+      <p class="hint">128px 圆形裁切模拟头像/挂载点;16px 模拟浏览器标签页与市场列表。</p>`;
+    for (const v of variants) {
+      const box = document.createElement('div');
+      box.className = 'variant';
+      box.innerHTML = `<div class="vhead"><span class="vname">${v.name}</span><span class="vdesc">${v.desc}</span></div>`;
+      const row = document.createElement('div');
+      row.className = 'row';
+      for (const s of sizes) {
+        const cell = document.createElement('div');
+        cell.className = 'cell';
+        const cls = s === 128 ? ' round' : '';
+        cell.innerHTML = `<img class="${cls}" width="${s}" height="${s}" src="${v.file}"><span>${s}px</span>`;
+        row.appendChild(cell);
+      }
+      box.appendChild(row);
+      root.appendChild(box);
+    }
+  }
+</script>
+</body>
+</html>

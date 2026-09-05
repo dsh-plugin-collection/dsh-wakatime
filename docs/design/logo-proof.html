@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>dsh-wakatime logo proof</title>
+<style>
+  body { margin: 0; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; background: #f5f6f8; color: #222; }
+  .sec { padding: 22px 30px; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  .full { display: flex; justify-content: center; padding: 8px 0; }
+  .pair { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; }
+  .plabel { width: 160px; font-size: 12px; line-height: 1.6; }
+  .crop { overflow: hidden; position: relative; border: 1px solid #bbb; }
+  .crop img { position: absolute; }
+  .arrow { font-size: 16px; opacity: .5; }
+  .note { font-size: 12px; opacity: .6; margin: 4px 0 0; }
+  .strip { display: flex; align-items: flex-end; gap: 24px; }
+  .cell { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 11px; opacity: .85; }
+  .round { border-radius: 50%; }
+  .dark { background: #101418; color: #eee; }
+</style>
+</head>
+<body>
+
+<div class="sec">
+  <h2>full new logo — 方案 A · 鲸鱼踏浪</h2>
+  <div class="full"><img src="logo-new.svg" width="360" height="360" alt="new logo"></div>
+</div>
+
+<div class="sec">
+  <h2>形状保真:官方素材逐字复用,仅重排构图</h2>
+  <div class="pair">
+    <div class="plabel">DSH 鲸鱼<br>旧版内嵌 → 新版内嵌</div>
+    <div class="crop" style="width:230px;height:180px"><img src="logo.svg" style="width:512px;margin-left:-75px;margin-top:-100px"></div>
+    <span class="arrow">→</span>
+    <div class="crop" style="width:236px;height:180px"><img src="logo-new.svg" style="width:397px;margin-left:-81px;margin-top:-51px"></div>
+  </div>
+  <div class="pair">
+    <div class="plabel">WakaTime W 折线<br>旧版内嵌 → 新版浪线</div>
+    <div class="crop" style="width:194px;height:144px"><img src="logo.svg" style="width:1024px;margin-left:-556px;margin-top:-568px"></div>
+    <span class="arrow">→</span>
+    <div class="crop" style="width:196px;height:144px"><img src="logo-new.svg" style="width:550px;margin-left:-178px;margin-top:-342px"></div>
+  </div>
+  <p class="note">两处形状均由 docs/design/build-variants.mjs 从官方 favicon / 品牌素材逐字提取(d 属性未改一字),只改了位置与缩放。</p>
+</div>
+
+<div class="sec">
+  <h2>尺寸测试(128 圆形裁切 = 头像/挂载点,16 = 标签页/市场)</h2>
+  <div class="strip" id="light-strip"></div>
+  <div class="strip dark" id="dark-strip" style="margin-top:12px;padding:12px;border-radius:8px"></div>
+</div>
+
+<script>
+  const sizes = [128, 64, 32, 16];
+  for (const id of ['light-strip', 'dark-strip']) {
+    const root = document.getElementById(id);
+    for (const s of sizes) {
+      const c = document.createElement('div');
+      c.className = 'cell';
+      c.innerHTML = `<img class="${s === 128 ? 'round' : ''}" src="logo-new.svg" width="${s}" height="${s}"><span>${s}px</span>`;
+      root.appendChild(c);
+    }
+  }
+</script>
+</body>
+</html>
