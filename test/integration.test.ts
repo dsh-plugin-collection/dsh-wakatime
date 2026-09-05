@@ -276,13 +276,31 @@ describe('Plugin wiring (apply)', () => {
   let server: MockWakaTimeServer;
   const testCacheDir = join(tmpdir(), 'dsh-wakatime-wiring-test-' + Date.now());
 
-  /** 最小假 ctx：捕获事件处理器，settings 服务缺席（跳过注册）。 */
-  function makeFakeCtx() {
+  /**
+   * 最小假 ctx：捕获事件处理器，settings 服务缺席（跳过注册）。
+   * 传入 resolvedSettings 时，settings 服务同步就绪：inject 立即执行回调，
+   * settings.register 返回以 resolvedSettings 为当前解析值的假 scope
+   *（get 返回该值；watch 收集监听器、返回退订函数）。
+   */
+  function makeFakeCtx(resolvedSettings?: Record<string, unknown>) {
     const handlers = new Map<string, Array<(...args: any[]) => void>>();
+    const watchCallbacks: Array<(next: any, prev: any) => void> = [];
+    const fakeScope = {
+      get: () => resolvedSettings,
+      watch: (cb: (next: any, prev: any) => void) => {
+        watchCallbacks.push(cb);
+        return () => {};
+      },
+      update: async () => {},
+      replace: async () => {},
+    };
+    const settingsCtx = { settings: { register: () => fakeScope } };
     const raw = {
       registry: { values: () => [] },
       logger: { info: () => {}, warn: () => {}, error: () => {} },
-      inject: (_names: string[], _cb: (c: unknown) => void) => {},
+      inject: (names: string[], cb: (c: unknown) => void) => {
+        if (resolvedSettings !== undefined && names.includes('settings')) cb(settingsCtx);
+      },
       on: (name: string, cb: (...args: any[]) => void) => {
         handlers.set(name, [...(handlers.get(name) ?? []), cb]);
       },
@@ -291,7 +309,7 @@ describe('Plugin wiring (apply)', () => {
     const emit = (name: string, ...args: any[]) => {
       for (const h of handlers.get(name) ?? []) h(...args);
     };
-    return { ctx: raw as unknown as Context, emit };
+    return { ctx: raw as unknown as Context, emit, watchCallbacks };
   }
 
   beforeEach(async () => {
@@ -407,5 +425,83 @@ describe('Plugin wiring (apply)', () => {
     }
     expect(server.getReceivedHeartbeats()).toHaveLength(1);
     expect(server.getReceivedHeartbeats()[0].entity).toBe('dsh-session-wiring-toggle');
+  });
+
+  it('should hydrate include_* flags from the settings scope at startup', async () => {
+    // 回归背景：runtime 只在 scope.watch（WebUI 保存）时合并 scope 值，
+    // 进程重启后入口 config 缺省 include_*（schema 默认 false）会静默丢掉
+    // 用户文档层里持久保存的 true —— 症状：设置卡显示「开启」，消息类
+    // 心跳却停摆。修复后启动即以 scope.get() 回读。
+    const session = { id: 'wiring-hydrate', header: { cwd: process.cwd() } };
+    const resolvedSettings = {
+      api_key: '',
+      api_url: server.getBaseUrl(),
+      heartbeat_interval_ms: 60000,
+      project_name: '',
+      language: '',
+      include_tool_calls: true,
+      include_user_messages: true,      // 用户文档层保存过的值
+      include_assistant_messages: true, // 入口 config 完全没喂这两个字段
+      cache_heartbeats: true,
+      cache_limit: 100,
+      debug: false,
+    };
+    const { ctx, emit } = makeFakeCtx(resolvedSettings);
+
+    // 入口 config：仅 api_key/api_url 等装载必需字段，include_* 缺省
+    apply(ctx as Context, {
+      api_key: 'test_key_12345',
+      api_url: server.getBaseUrl(),
+      heartbeat_interval_ms: 60000,
+      project_name: '', language: '',
+      cache_heartbeats: true, cache_limit: 100, debug: false,
+    } as any);
+
+    emit('agent/status', { agent: { session }, status: 'running' });
+    // scope 说开启的两个消息类事件都应产生心跳（修复前：双双被默认 false 过滤）
+    emit('session/event', session, { type: 'user/message', data: { content: '重启后还能追踪吗' } });
+    emit('session/event', session, {
+      type: 'assistant/message',
+      data: { turn: 1, step: 1, message: { content: 'ok' }, usage: { inputTokens: 88, outputTokens: 12 } },
+    });
+    emit('agent/status', { agent: { session }, status: 'idle' });
+
+    for (let t = 0; t < 60 && server.getReceivedHeartbeats().length !== 2; t++) {
+      await new Promise(r => setTimeout(r, 50));
+    }
+    const heartbeats = server.getReceivedHeartbeats();
+    expect(heartbeats).toHaveLength(2);
+    // mock 收到的是插件发送的原始 category（WakaTime 服务端才归一化为大写）
+    const categories = heartbeats.map((h: any) => h.category).sort();
+    expect(categories).toEqual(['ai coding', 'communicating']);
+    const ai = heartbeats.find((h: any) => h.category === 'ai coding');
+    expect(ai.entity).toBe('dsh-session-wiring-hydrate');
+    expect(ai.ai_input_tokens).toBe(88);
+    expect(ai.ai_output_tokens).toBe(12);
+  });
+
+  it('should keep scope-provided false overrides at startup', async () => {
+    // 反向断言：hydration 不会凭空打开开关 —— scope 明确 false 时仍过滤
+    const { ctx, emit } = makeFakeCtx({
+      api_key: '', api_url: server.getBaseUrl(), heartbeat_interval_ms: 60000,
+      project_name: '', language: '',
+      include_tool_calls: true, include_user_messages: false, include_assistant_messages: false,
+      cache_heartbeats: true, cache_limit: 100, debug: false,
+    });
+    const session = { id: 'wiring-hydrate-off', header: { cwd: process.cwd() } };
+
+    apply(ctx as Context, {
+      api_key: 'test_key_12345',
+      api_url: server.getBaseUrl(),
+      heartbeat_interval_ms: 60000,
+      project_name: '', language: '',
+      cache_heartbeats: true, cache_limit: 100, debug: false,
+    } as any);
+
+    emit('agent/status', { agent: { session }, status: 'running' });
+    emit('session/event', session, { type: 'user/message', data: { content: 'should be dropped' } });
+    emit('agent/status', { agent: { session }, status: 'idle' });
+    await new Promise(r => setTimeout(r, 150));
+    expect(server.getReceivedHeartbeats()).toHaveLength(0);
   });
 });

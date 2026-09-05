@@ -110,6 +110,24 @@ export function apply(ctx: Context, config: Config): void {
     try {
       const scope = registerWakaTimeSettings(settingsCtx, baseConfig);
 
+      // 启动即回读：以 scope 的当前解析值（schema 默认 → base → 用户文档层）
+      // 校正 runtime。watch 只在「后续变更」时触发，而插件入口 config 未必
+      // 携带 include_* 等字段（如经 profile 依赖自动加载）——不回读的话，
+      // 进程重启会静默丢掉用户此前在 WebUI 保存的持久开关（症状：设置卡
+      // 仍显示「开启」，但用户/AI 消息追踪实际已停摆，工具追踪因默认 true
+      // 存活）。回归背景：2026-09-01 起消息类 token 统计因此断流。
+      const prevInterval = runtime.heartbeat_interval_ms;
+      Object.assign(runtime, effectiveConfig(baseConfig, scope.get()));
+      client.updateConfig(runtime);
+      if (runtime.heartbeat_interval_ms !== prevInterval) {
+        restartActiveTimers();
+      }
+      if (runtime.debug) {
+        ctx.logger.info(
+          `dsh-wakatime: runtime hydrated from settings scope (tool=${runtime.include_tool_calls}, user=${runtime.include_user_messages}, ai=${runtime.include_assistant_messages}, debug=${runtime.debug})`,
+        );
+      }
+
       // Watch for settings changes from WebUI: 原地合并进 runtime，
       // 所有持有该引用的组件（client/cache/tracker/事件处理器）即时生效
       scope.watch((next) => {
@@ -220,7 +238,9 @@ export function apply(ctx: Context, config: Config): void {
   };
 
   /** 心跳间隔变更后重建所有会话的在跑定时器（WebUI 实时调整间隔）。 */
-  const restartActiveTimers = (): void => {
+  // 函数声明（非 const 箭头）：settings 服务可能同步就绪，inject 回调在
+  // restartActiveTimers 初始化前执行，函数声明的提升可避开 TDZ。
+  function restartActiveTimers(): void {
     for (const session of activeSessions) {
       const state = states.get(session);
       if (!state?.timer) continue;
@@ -229,7 +249,7 @@ export function apply(ctx: Context, config: Config): void {
         flushPendingSafely(session);
       }, runtime.heartbeat_interval_ms);
     }
-  };
+  }
 
   // 监听器常驻注册，include_* 开关在事件到达时检查 runtime —— WebUI 切换即时生效
   ctx.on('session/event', (session: Session, event: SessionEvent) => {
