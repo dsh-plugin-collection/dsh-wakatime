@@ -35,11 +35,22 @@ The plugin is a bridge between two systems: it runs **inside DSH** and speaks th
 
 | Side | Compatibility |
 |---|---|
-| **DSH (DeepSeek Harness)** | Runs as a DSH plugin on the web profile; peer deps pinned to `@deepseek-ai/dsh-*` `^0.1.1-rc.2`; Node >= 22.19 (including 24+); Windows / macOS / Linux |
+| **DSH (DeepSeek Harness)** | Runs as a DSH plugin on the web profile; peer deps enumerated across generations: `@deepseek-ai/dsh-*` `^0.1.1-rc.2 \|\| ^0.1.2-rc.1`; Node >= 22.19 (including 24+); Windows / macOS / Linux |
 | **WakaTime cloud** | Works with wakatime.com out of the box (Heartbeat API v1) |
 | **Self-hosted WakaTime** | Supported via the **API URL** setting — any WakaTime-compatible server |
 | **WakaTime ecosystem** | Reads the standard `~/.wakatime.cfg`, so an existing API key is picked up automatically |
 | **Other telemetry plugins** | Use one heartbeat backend per DSH profile; don't enable alongside similar plugins (e.g. codetime) |
+
+### Kernel generation verification (measured 2026-09-07)
+
+| DSH kernel | host entry link | real boot (headless) | real boot (web) |
+|---|---|---|---|
+| `0.1.1-rc.2` | ✅ | ✅ past the plugin stage | ✅ client bundle HTTP 200 |
+| `0.1.2-rc.1` | ✅ | ✅ past the plugin stage | ✅ client bundle HTTP 200 |
+
+Peer deps can only be an **explicit generation list**, never `>=0.1.1-rc.2`: node-semver excludes prereleases from every range unless a comparator carries the same `[major.minor.patch]` tuple, so `^0.1.1-rc.2` is false for `0.1.2-rc.1`, and so is `*`. **Add another entry whenever upstream ships a new rc generation**, otherwise installation fails the peer check.
+
+The settings namespace is written as `'wakatime' as SettingsNamespace` (type-only import) instead of calling the `settingsNamespace()` helper — removed in `0.1.2`, where importing it at runtime makes the whole module fail to link. Format validation happens inside `ctx.settings.register()` on both generations. `lib/client.js` was measured to have zero kernel imports, so it is generation-independent.
 
 ## Installation
 

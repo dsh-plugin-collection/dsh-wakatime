@@ -35,11 +35,22 @@ DeepSeek Harness（DSH）的 WakaTime 心跳上报插件。
 
 | 端 | 兼容性 |
 |---|---|
-| **DSH（DeepSeek Harness）** | 以 DSH 插件形式运行于 web profile；peer 依赖锁定 `@deepseek-ai/dsh-*` `^0.1.1-rc.2`；Node ≥ 22.19（含 24+）；Windows / macOS / Linux 全支持 |
+| **DSH（DeepSeek Harness）** | 以 DSH 插件形式运行于 web profile；peer 依赖跨代枚举 `@deepseek-ai/dsh-*` `^0.1.1-rc.2 \|\| ^0.1.2-rc.1`；Node ≥ 22.19（含 24+）；Windows / macOS / Linux 全支持 |
 | **WakaTime 云端** | 开箱即用对接 wakatime.com（心跳 API v1） |
 | **自托管 WakaTime** | 通过 **API URL** 设置支持任意 WakaTime 兼容服务端 |
 | **WakaTime 生态** | 自动读取标准 `~/.wakatime.cfg`，已有 API Key 无需重复配置 |
 | **其他遥测插件** | 每个 DSH profile 只保留一个心跳后端，请勿与同类插件（如 codetime）同时启用 |
+
+### 内核代次验证（2026-09-07 实测）
+
+| DSH 内核 | host 入口链接 | 真实启动（headless） | 真实启动（web） |
+|---|---|---|---|
+| `0.1.1-rc.2` | ✅ | ✅ 过插件阶段 | ✅ client bundle HTTP 200 |
+| `0.1.2-rc.1` | ✅ | ✅ 过插件阶段 | ✅ client bundle HTTP 200 |
+
+peer 只能写成**逐代枚举**而不是 `>=0.1.1-rc.2`：node-semver 默认不把预发布版算进任何范围，只有比较符带同一 `[major.minor.patch]` 元组时才放行，因此 `^0.1.1-rc.2` 对 `0.1.2-rc.1` 为假、`*` 同样为假。**上游每发布一个新的 rc 代次，这里就要补一个枚举项**，否则安装期即因 peer 不满足而失败。
+
+本插件设置命名空间写作 `'wakatime' as SettingsNamespace`（type-only 导入），不使用 `settingsNamespace()` helper —— 它在 `0.1.2` 已被删除，运行时导入会让整个模块链接失败；格式校验两代都由 `ctx.settings.register()` 内部完成。`lib/client.js` 实测零内核导入，与代次无关。
 
 ## 安装
 
