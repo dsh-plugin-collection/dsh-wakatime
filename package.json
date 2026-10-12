@@ -2,6 +2,7 @@
   "name": "dsh-wakatime",
   "version": "1.0.0",
   "description": "WakaTime heartbeat reporting for DeepSeek Harness",
+  "icon": "./icon.svg",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -14,6 +15,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "icon.svg",
     "lib",
     "cordis.patch.yml",
     "README.md"
@@ -69,5 +71,10 @@
         "@deepseek-ai/dsh-client-ui-conversation"
       ]
     }
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dsh-plugins/dsh-wakatime.git"
+  },
+  "homepage": "https://github.com/dsh-plugins/dsh-wakatime"
 }

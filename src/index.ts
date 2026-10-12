@@ -9,12 +9,16 @@ import type { Agent, AgentStatus } from '@deepseek-ai/dsh-agent';
 import { WakaTimeClient } from './wakatime.js';
 import { FileTracker } from './tracker.js';
 import { HeartbeatCache } from './cache.js';
-import { registerWakaTimeSettings, effectiveConfig } from './settings.js';
 import { readWakatimeCfgApiKey, maskApiKey } from './project.js';
 
 export const name = 'dsh-wakatime';
 export const inject = ['sessions'];
 
+/**
+ * 0.2.0 配置迁移：`Config` 用 `.volatile()` 标记用户可调字段，
+ * 内核自动把 Config 投影成设置页（ns = Loader 条目 id = `dsh-wakatime`）。
+ * 不再需要 `ctx.settings.register()`（该 API 在 0.1.7 已删除）。
+ */
 export interface Config {
   api_key: string;
   api_url: string;
@@ -30,7 +34,7 @@ export interface Config {
 }
 
 export const Config = Schema.object({
-  api_key: Schema.string().required(),
+  api_key: Schema.string().default('').role('secret'),
   api_url: Schema.string().default('https://wakatime.com'),
   heartbeat_interval_ms: Schema.natural().min(60000).max(300000).default(120000),
   project_name: Schema.string().default(''),
@@ -41,7 +45,7 @@ export const Config = Schema.object({
   cache_heartbeats: Schema.boolean().default(true),
   cache_limit: Schema.natural().min(10).max(1000).default(100),
   debug: Schema.boolean().default(false),
-});
+}).volatile();
 
 interface SessionState {
   tracker: FileTracker;
@@ -81,17 +85,12 @@ export function apply(ctx: Context, config: Config): void {
     return;
   }
 
-  const baseConfig: Config = {
-    ...config,
-    api_key: apiKey,
-  };
-
   /**
-   * 运行时配置单例：WebUI 设置更新经 scope.watch 原地合并进同一对象，
+   * 运行时配置单例：WebUI 设置更新经 settings/document-updated 事件原地合并进同一对象，
    * client / cache / tracker / 各事件处理器都持有这个引用 —— 除心跳间隔
    * 需要重建定时器外，其余改动即时生效。
    */
-  const runtime: Config = { ...baseConfig };
+  const runtime: Config = { ...config, api_key: apiKey };
 
   if (runtime.debug) {
     ctx.logger.info(`dsh-wakatime: loaded with API key ${maskApiKey(apiKey)}`);
@@ -105,50 +104,80 @@ export function apply(ctx: Context, config: Config): void {
   // Keep track of all sessions for shutdown cleanup
   const activeSessions = new Set<Session>();
 
-  // Register WebUI settings panel - must be synchronous in apply()
+  // 0.2.0 设置监听：订阅 settings/document-updated 事件，重新读取配置
+  // 并合并进 runtime。内核在 describe 检测到变化时发该事件。
   ctx.inject(['settings'], (settingsCtx: Context) => {
-    try {
-      const scope = registerWakaTimeSettings(settingsCtx, baseConfig);
+    const ENTRY_ID = 'dsh-wakatime';
+    const SETTINGS_NAMESPACE = 'wakatime';
 
-      // 启动即回读：以 scope 的当前解析值（schema 默认 → base → 用户文档层）
-      // 校正 runtime。watch 只在「后续变更」时触发，而插件入口 config 未必
-      // 携带 include_* 等字段（如经 profile 依赖自动加载）——不回读的话，
-      // 进程重启会静默丢掉用户此前在 WebUI 保存的持久开关（症状：设置卡
-      // 仍显示「开启」，但用户/AI 消息追踪实际已停摆，工具追踪因默认 true
-      // 存活）。回归背景：2026-09-01 起消息类 token 统计因此断流。
-      const prevInterval = runtime.heartbeat_interval_ms;
-      Object.assign(runtime, effectiveConfig(baseConfig, scope.get()));
-      client.updateConfig(runtime);
-      if (runtime.heartbeat_interval_ms !== prevInterval) {
-        restartActiveTimers();
-      }
-      if (runtime.debug) {
-        ctx.logger.info(
-          `dsh-wakatime: runtime hydrated from settings scope (tool=${runtime.include_tool_calls}, user=${runtime.include_user_messages}, ai=${runtime.include_assistant_messages}, debug=${runtime.debug})`,
-        );
-      }
+    const readSettings = (value: unknown): Config => {
+      if (value === undefined) return runtime;
+      const v = value as Partial<Config>;
+      return {
+        api_key: v.api_key !== undefined ? v.api_key : runtime.api_key,
+        api_url: v.api_url !== undefined ? v.api_url : runtime.api_url,
+        heartbeat_interval_ms: v.heartbeat_interval_ms !== undefined ? v.heartbeat_interval_ms : runtime.heartbeat_interval_ms,
+        project_name: v.project_name !== undefined ? v.project_name : runtime.project_name,
+        language: v.language !== undefined ? v.language : runtime.language,
+        include_tool_calls: v.include_tool_calls !== undefined ? v.include_tool_calls : runtime.include_tool_calls,
+        include_user_messages: v.include_user_messages !== undefined ? v.include_user_messages : runtime.include_user_messages,
+        include_assistant_messages: v.include_assistant_messages !== undefined ? v.include_assistant_messages : runtime.include_assistant_messages,
+        cache_heartbeats: v.cache_heartbeats !== undefined ? v.cache_heartbeats : runtime.cache_heartbeats,
+        cache_limit: v.cache_limit !== undefined ? v.cache_limit : runtime.cache_limit,
+        debug: v.debug !== undefined ? v.debug : runtime.debug,
+      };
+    };
 
-      // Watch for settings changes from WebUI: 原地合并进 runtime，
-      // 所有持有该引用的组件（client/cache/tracker/事件处理器）即时生效
-      scope.watch((next) => {
-        const prevInterval = runtime.heartbeat_interval_ms;
-        Object.assign(runtime, effectiveConfig(baseConfig, next));
-        client.updateConfig(runtime);
-        // 心跳间隔变化需要重建已在跑的定时器；其余字段因共享引用自动生效
-        if (runtime.heartbeat_interval_ms !== prevInterval) {
-          restartActiveTimers();
+    let getSettings = (): Config => runtime;
+
+    // 启动即读一次：以当前解析值校正 runtime
+    const forms = settingsCtx.settings as unknown as {
+      describe?: (opts?: { redactSecrets?: boolean }) => Array<{ ns: string; value?: unknown }>;
+    };
+    if (forms?.describe) {
+      try {
+        const row = forms.describe({ redactSecrets: true }).find((candidate) => candidate.ns === ENTRY_ID || candidate.ns === SETTINGS_NAMESPACE);
+        if (row?.value !== undefined) {
+          const next = readSettings(row.value);
+          const prevInterval = runtime.heartbeat_interval_ms;
+          Object.assign(runtime, next);
+          client.updateConfig(runtime);
+          if (runtime.heartbeat_interval_ms !== prevInterval) {
+            restartActiveTimers();
+          }
+          if (runtime.debug) {
+            ctx.logger.info(
+              `dsh-wakatime: runtime hydrated from settings (tool=${runtime.include_tool_calls}, user=${runtime.include_user_messages}, ai=${runtime.include_assistant_messages}, debug=${runtime.debug})`,
+            );
+          }
         }
-        if (runtime.debug) {
-          ctx.logger.info('dsh-wakatime: settings updated from WebUI');
-        }
-      });
-      
-      if (runtime.debug) {
-        ctx.logger.info('dsh-wakatime: settings namespace registered (wakatime)');
+      } catch {
+        // describe 不可用时保留现值
       }
-    } catch (error) {
-      ctx.logger.warn(`dsh-wakatime: settings registration failed: ${String(error)}`);
     }
+
+    // 文档更新 → 重新取值
+    settingsCtx.on('settings/document-updated', (ns: unknown) => {
+      if (ns !== ENTRY_ID && ns !== SETTINGS_NAMESPACE) return;
+      if (!forms?.describe) return;
+      try {
+        const row = forms.describe({ redactSecrets: true }).find((candidate) => candidate.ns === ENTRY_ID || candidate.ns === SETTINGS_NAMESPACE);
+        if (row?.value !== undefined) {
+          const next = readSettings(row.value);
+          const prevInterval = runtime.heartbeat_interval_ms;
+          Object.assign(runtime, next);
+          client.updateConfig(runtime);
+          if (runtime.heartbeat_interval_ms !== prevInterval) {
+            restartActiveTimers();
+          }
+          if (runtime.debug) {
+            ctx.logger.info('dsh-wakatime: settings updated from WebUI');
+          }
+        }
+      } catch {
+        // 读取失败时保留现值
+      }
+    });
   });
 
   // dsh 启动器对 unhandledRejection 是 fail-loud 策略（打印 "fatal load failure" 并

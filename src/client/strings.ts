@@ -14,8 +14,6 @@ export type WkLocaleId = 'zh' | 'en';
 export type WkSectionId = 'api' | 'tracking' | 'cacheDebug';
 
 const zh = {
-  /** 卡片描述（折叠头副标题） */
-  description: '编码活动统计：文件级心跳同步到 WakaTime 仪表板',
   /** 分组标题 */
   sections: {
     api: 'API',
@@ -39,24 +37,20 @@ const zh = {
   /** 固定 chrome 文案 */
   overridden: '已覆盖',
   reset: '重置',
-  on: '开启',
-  off: '关闭',
   configured: '已配置',
   notConfigured: '未配置',
-  unsavedBadge: '未保存',
   readOnlyNote: '当前部署不可写（内存模式）',
   saveFailed: '保存未落地，请检查后重试',
   discard: '放弃修改',
   save: '保存',
   saving: '保存中…',
-  ariaExpand: '展开：WakaTime',
-  ariaCollapse: '折叠：WakaTime',
+  /** 帮助按钮 aria-label 模板（{field} 占位符） */
+  helpAriaLabel: '{field}说明',
   /** 数值越界校验（{min}/{max} 占位符） */
   invalidRange: '需为 {min}–{max} 的整数',
 } as const;
 
 const en: { [K in keyof typeof zh]: string } = {
-  description: 'Coding activity stats: file-level heartbeats synced to your WakaTime dashboard',
   sections: {
     api: 'API',
     tracking: 'Tracking',
@@ -77,18 +71,14 @@ const en: { [K in keyof typeof zh]: string } = {
   },
   overridden: 'Overridden',
   reset: 'Reset',
-  on: 'On',
-  off: 'Off',
   configured: 'Configured',
   notConfigured: 'Not configured',
-  unsavedBadge: 'Unsaved',
   readOnlyNote: 'Read-only on this deployment (in-memory mode)',
   saveFailed: 'Save did not land; check and retry',
   discard: 'Discard changes',
   save: 'Save',
   saving: 'Saving…',
-  ariaExpand: 'Expand: WakaTime',
-  ariaCollapse: 'Collapse: WakaTime',
+  helpAriaLabel: '{field} help',
   invalidRange: 'Must be an integer between {min} and {max}',
 };
 
@@ -101,9 +91,16 @@ export type WkFieldKey = keyof typeof zh.fields;
 /** 全部 locale 字典（键集一致，由 en 的映射类型保证）。 */
 export const wkDicts: Record<WkLocaleId, WkStrings> = { zh, en };
 
+/** 归一化 locale id：处理 zh-CN/zh-Hans 等变体。 */
+export function normalizeLocale(localeId: string | undefined): WkLocaleId {
+  if (localeId === 'en') return 'en';
+  if (localeId?.startsWith('zh')) return 'zh';
+  return 'zh';
+}
+
 /** 按 locale id 取字典；未收录 id 回退中文。 */
 export function dictFor(localeId: string | undefined): WkStrings {
-  return localeId === 'en' ? wkDicts.en : wkDicts.zh;
+  return wkDicts[normalizeLocale(localeId)];
 }
 
 /** 把 {min}/{max} 类占位符替换为参数。 */

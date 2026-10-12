@@ -8,7 +8,7 @@
  * @module dsh-wakatime/client/useWkT
  */
 import { useCallback, useSyncExternalStore } from 'react';
-import { dictFor, type WkLocaleId, type WkStrings } from './strings.ts';
+import { dictFor, normalizeLocale, type WkLocaleId, type WkStrings } from './strings.ts';
 
 /** 宿主 locale 服务的结构化子集（避免引入运行时包类型依赖）。 */
 export interface LocaleFaceLike {
@@ -38,6 +38,6 @@ export function useWkT(locale: LocaleFaceLike | undefined): WkT {
   );
   const getActive = useCallback(() => (locale === undefined ? 'zh' : locale.getSnapshot().active), [locale]);
   const active = useSyncExternalStore(subscribe, getActive);
-  const lang: WkLocaleId = active === 'en' ? 'en' : 'zh';
+  const lang: WkLocaleId = normalizeLocale(active);
   return { lang, t: dictFor(active) };
 }
