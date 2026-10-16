@@ -275,8 +275,11 @@ export function readWakatimeCfgApiKey(): string {
 
 /**
  * Mask API key for logging: waka_****最后4位
+ *
+ * 参数在运行时可能是任意值（配置层来自 YAML/环境变量，未必是 string），
+ * 因此保留 typeof 防御 —— 非字符串一律退化为固定掩码，绝不抛异常。
  */
 export function maskApiKey(apiKey: string): string {
-  if (!apiKey || apiKey.length <= 4) return '****';
+  if (typeof apiKey !== 'string' || apiKey.length <= 4) return '****';
   return `waka_****${apiKey.slice(-4)}`;
 }

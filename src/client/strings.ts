@@ -11,7 +11,7 @@
 export type WkLocaleId = 'zh' | 'en';
 
 /** 设置卡片的分组 id（FIELDS.section 取值；显示文案在字典的 sections 表）。 */
-export type WkSectionId = 'api' | 'tracking' | 'cacheDebug';
+export type WkSectionId = 'api' | 'tracking' | 'cacheDebug' | 'display';
 
 const zh = {
   /** 分组标题 */
@@ -19,6 +19,7 @@ const zh = {
     api: 'API',
     tracking: '追踪',
     cacheDebug: '缓存与调试',
+    display: '显示设置',
   },
   /** 字段 label / hint（key 与 settings 命名空间字段一致） */
   fields: {
@@ -44,6 +45,9 @@ const zh = {
   discard: '放弃修改',
   save: '保存',
   saving: '保存中…',
+  /** 「在设置中显示」开关文案（仅详情页显示） */
+  showInSettings: '在设置中显示',
+  showInSettingsHint: '在设置对话框中显示本插件的设置页（刷新页面后生效）',
   /** 帮助按钮 aria-label 模板（{field} 占位符） */
   helpAriaLabel: '{field}说明',
   /** 数值越界校验（{min}/{max} 占位符） */
@@ -55,6 +59,7 @@ const en: { [K in keyof typeof zh]: string } = {
     api: 'API',
     tracking: 'Tracking',
     cacheDebug: 'Cache & Debug',
+    display: 'Display',
   },
   fields: {
     api_key: { label: 'API Key', hint: 'WakaTime API key; falls back to env vars and ~/.wakatime.cfg when empty' },
@@ -78,6 +83,8 @@ const en: { [K in keyof typeof zh]: string } = {
   discard: 'Discard changes',
   save: 'Save',
   saving: 'Saving…',
+  showInSettings: 'Show in settings',
+  showInSettingsHint: 'Show this plugin\'s settings page in the settings dialog (refresh to take effect)',
   helpAriaLabel: '{field} help',
   invalidRange: 'Must be an integer between {min} and {max}',
 };

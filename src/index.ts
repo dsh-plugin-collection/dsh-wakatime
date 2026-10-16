@@ -34,18 +34,18 @@ export interface Config {
 }
 
 export const Config = Schema.object({
-  api_key: Schema.string().default('').role('secret'),
-  api_url: Schema.string().default('https://wakatime.com'),
-  heartbeat_interval_ms: Schema.natural().min(60000).max(300000).default(120000),
-  project_name: Schema.string().default(''),
-  language: Schema.string().default(''),
-  include_tool_calls: Schema.boolean().default(true),
-  include_user_messages: Schema.boolean().default(false),
-  include_assistant_messages: Schema.boolean().default(false),
-  cache_heartbeats: Schema.boolean().default(true),
-  cache_limit: Schema.natural().min(10).max(1000).default(100),
-  debug: Schema.boolean().default(false),
-}).volatile();
+  api_key: Schema.string().default('').role('secret').volatile(),
+  api_url: Schema.string().default('https://wakatime.com').volatile(),
+  heartbeat_interval_ms: Schema.natural().min(60000).max(300000).default(120000).volatile(),
+  project_name: Schema.string().default('').volatile(),
+  language: Schema.string().default('').volatile(),
+  include_tool_calls: Schema.boolean().default(true).volatile(),
+  include_user_messages: Schema.boolean().default(false).volatile(),
+  include_assistant_messages: Schema.boolean().default(false).volatile(),
+  cache_heartbeats: Schema.boolean().default(true).volatile(),
+  cache_limit: Schema.natural().min(10).max(1000).default(100).volatile(),
+  debug: Schema.boolean().default(false).volatile(),
+});
 
 interface SessionState {
   tracker: FileTracker;
@@ -106,78 +106,117 @@ export function apply(ctx: Context, config: Config): void {
 
   // 0.2.0 设置监听：订阅 settings/document-updated 事件，重新读取配置
   // 并合并进 runtime。内核在 describe 检测到变化时发该事件。
-  ctx.inject(['settings'], (settingsCtx: Context) => {
-    const ENTRY_ID = 'dsh-wakatime';
-    const SETTINGS_NAMESPACE = 'wakatime';
+  //
+  // 【事件投递语义】cordis 不做父子树传播，而是用 isolate 作用域相等性过滤：
+  //   EventsService.dispatch() 读 `thisArg?.[Context.filter]`，保留
+  //   `hook.global || !filter || filter.call(thisArg, hook.ctx)`（cordis 4.0.4）。
+  // 而 Service 的 isolate 断言是【服务实例】上的方法，构造时并不会装到 ctx 上；
+  // dsh-settings 用 `this.ownerContext.emit('settings/document-updated', ...)` 发射
+  // （dsh-settings/lib/index.js:435），该 emitter 的 filter 槽实测为 undefined，
+  // 于是 `!filter` 成立 —— 事件被投递给进程内【所有】监听者，与注册深度无关
+  // （包括 ctx.inject 回调拿到的子 ctx，以及 ctx.root）。
+  //
+  // 因此这里注册在插件自己的 ctx 上（而非 root）：语义上更窄、不越权广播，
+  // 同时【必须】保留下面的 ns 过滤 —— 本跳根本没有过滤，任何命名空间的事件
+  // 都会打进来。历史注释曾称「必须挂在 root 才能收到」，经实测为误判。
+  const ENTRY_ID = 'dsh-wakatime';
+  // 兼容旧版 settings.yaml 遗留的 section 名
+  const SETTINGS_NAMESPACE = 'wakatime';
 
-    const readSettings = (value: unknown): Config => {
-      if (value === undefined) return runtime;
-      const v = value as Partial<Config>;
-      return {
-        api_key: v.api_key !== undefined ? v.api_key : runtime.api_key,
-        api_url: v.api_url !== undefined ? v.api_url : runtime.api_url,
-        heartbeat_interval_ms: v.heartbeat_interval_ms !== undefined ? v.heartbeat_interval_ms : runtime.heartbeat_interval_ms,
-        project_name: v.project_name !== undefined ? v.project_name : runtime.project_name,
-        language: v.language !== undefined ? v.language : runtime.language,
-        include_tool_calls: v.include_tool_calls !== undefined ? v.include_tool_calls : runtime.include_tool_calls,
-        include_user_messages: v.include_user_messages !== undefined ? v.include_user_messages : runtime.include_user_messages,
-        include_assistant_messages: v.include_assistant_messages !== undefined ? v.include_assistant_messages : runtime.include_assistant_messages,
-        cache_heartbeats: v.cache_heartbeats !== undefined ? v.cache_heartbeats : runtime.cache_heartbeats,
-        cache_limit: v.cache_limit !== undefined ? v.cache_limit : runtime.cache_limit,
-        debug: v.debug !== undefined ? v.debug : runtime.debug,
-      };
-    };
+  /** describe() 返回的行：只声明我们实际用到的字段以避免引入私有类型依赖。 */
+  interface SettingsRow {
+    ns: string;
+    value?: unknown;
+    /** 仅在 redactSecrets 时出现：标记 schema 声明的 secret 槽位是否有值。 */
+    secrets?: Array<{ path: string[]; set: boolean }>;
+  }
 
-    let getSettings = (): Config => runtime;
+  /**
+   * describe() 的调用入口。settings 服务可能尚未就绪（无 settings 服务、
+   * 或服务未提供 describe），此时返回 undefined，调用方保留现值。
+   */
+  let describeRows: (() => SettingsRow[] | undefined) | null = null;
 
-    // 启动即读一次：以当前解析值校正 runtime
-    const forms = settingsCtx.settings as unknown as {
-      describe?: (opts?: { redactSecrets?: boolean }) => Array<{ ns: string; value?: unknown }>;
-    };
-    if (forms?.describe) {
-      try {
-        const row = forms.describe({ redactSecrets: true }).find((candidate) => candidate.ns === ENTRY_ID || candidate.ns === SETTINGS_NAMESPACE);
-        if (row?.value !== undefined) {
-          const next = readSettings(row.value);
-          const prevInterval = runtime.heartbeat_interval_ms;
-          Object.assign(runtime, next);
-          client.updateConfig(runtime);
-          if (runtime.heartbeat_interval_ms !== prevInterval) {
-            restartActiveTimers();
-          }
-          if (runtime.debug) {
-            ctx.logger.info(
-              `dsh-wakatime: runtime hydrated from settings (tool=${runtime.include_tool_calls}, user=${runtime.include_user_messages}, ai=${runtime.include_assistant_messages}, debug=${runtime.debug})`,
-            );
-          }
-        }
-      } catch {
-        // describe 不可用时保留现值
-      }
+  /**
+   * 用一行 describe 结果校正 runtime。
+   *
+   * 注意 describe({ redactSecrets: true }) 对 role('secret') 字段的行为是
+   * 【整个字段被移除】（返回 undefined），而不是替换成占位串：
+   *   redactSecrets() -> walk() 在 `node.meta.role === 'secret'` 时直接 return undefined，
+   *   只把 { path, set } 记进旁路 secrets 数组（dsh-settings/lib/index.js:22-30, 73-89）。
+   * 所以 `v.api_key !== undefined` 这个判断本身就是「用户这次提交了新 key」的正确信号：
+   * 未改动 key 时该字段缺席，不会被读成空值而覆盖掉正在用的 key。
+   * 这里把该意图显式化并加注释，避免后续被"简化"成 `v.api_key || ...`。
+   */
+  const applyRow = (row: SettingsRow, source: string): void => {
+    const v = (row.value ?? {}) as Partial<Config>;
+    const prevInterval = runtime.heartbeat_interval_ms;
+
+    // 逐个字段合并：undefined 表示「本次未提交该字段」，保留 runtime 现值。
+    // api_key 尤其不能退化成 falsy 判断 —— 空串是合法用户输入，而 redacted
+    // 字段是 undefined；两者语义不同，必须用 !== undefined 区分。
+    if (v.api_key !== undefined) runtime.api_key = v.api_key;
+    if (v.api_url !== undefined) runtime.api_url = v.api_url;
+    if (v.heartbeat_interval_ms !== undefined) runtime.heartbeat_interval_ms = v.heartbeat_interval_ms;
+    if (v.project_name !== undefined) runtime.project_name = v.project_name;
+    if (v.language !== undefined) runtime.language = v.language;
+    if (v.include_tool_calls !== undefined) runtime.include_tool_calls = v.include_tool_calls;
+    if (v.include_user_messages !== undefined) runtime.include_user_messages = v.include_user_messages;
+    if (v.include_assistant_messages !== undefined) runtime.include_assistant_messages = v.include_assistant_messages;
+    if (v.cache_heartbeats !== undefined) runtime.cache_heartbeats = v.cache_heartbeats;
+    if (v.cache_limit !== undefined) runtime.cache_limit = v.cache_limit;
+    if (v.debug !== undefined) runtime.debug = v.debug;
+
+    // client 持有 runtime 引用，重建其内部快照
+    client.updateConfig(runtime);
+    // 心跳间隔变更需要重建在跑定时器，其余字段在事件到达时读 runtime 即时生效
+    if (runtime.heartbeat_interval_ms !== prevInterval) {
+      restartActiveTimers();
     }
+    if (runtime.debug) {
+      ctx.logger.info(
+        `dsh-wakatime: runtime ${source} (tool=${runtime.include_tool_calls}, user=${runtime.include_user_messages}, ai=${runtime.include_assistant_messages}, debug=${runtime.debug})`,
+      );
+    }
+  };
 
-    // 文档更新 → 重新取值
-    settingsCtx.on('settings/document-updated', (ns: unknown) => {
-      if (ns !== ENTRY_ID && ns !== SETTINGS_NAMESPACE) return;
-      if (!forms?.describe) return;
-      try {
-        const row = forms.describe({ redactSecrets: true }).find((candidate) => candidate.ns === ENTRY_ID || candidate.ns === SETTINGS_NAMESPACE);
-        if (row?.value !== undefined) {
-          const next = readSettings(row.value);
-          const prevInterval = runtime.heartbeat_interval_ms;
-          Object.assign(runtime, next);
-          client.updateConfig(runtime);
-          if (runtime.heartbeat_interval_ms !== prevInterval) {
-            restartActiveTimers();
-          }
-          if (runtime.debug) {
-            ctx.logger.info('dsh-wakatime: settings updated from WebUI');
-          }
-        }
-      } catch {
-        // 读取失败时保留现值
-      }
-    });
+  /** 读取本插件命名空间的那一行；describe 不可用或缺行时返回 undefined。 */
+  const readOwnRow = (): SettingsRow | undefined => {
+    // 先取到本地绑定：闭包调用会丢失上面的窄化
+    const read = describeRows;
+    if (!read) return undefined;
+    try {
+      const rows = read();
+      if (!rows) return undefined;
+      return rows.find((row) => row.ns === ENTRY_ID || row.ns === SETTINGS_NAMESPACE);
+    } catch {
+      // describe 不可用时保留现值
+      return undefined;
+    }
+  };
+
+  ctx.inject(['settings'], (settingsCtx: Context) => {
+    const settings = settingsCtx.settings as unknown as {
+      describe?: (opts?: { redactSecrets?: boolean }) => SettingsRow[];
+    };
+    const describe = settings?.describe;
+    if (typeof describe !== 'function') return;
+    describeRows = () => describe.call(settings, { redactSecrets: true });
+  });
+
+  // 启动即读一次：以当前解析值校正 runtime。
+  // 回归背景：进程重启后入口 config 缺省 include_*（schema 默认 false），
+  // 会静默丢掉用户文档层里持久保存的 true。describe() 是权威来源。
+  const bootRow = readOwnRow();
+  if (bootRow) applyRow(bootRow, 'hydrated from settings');
+
+  // 文档更新 → 重新取值并合并。
+  // 挂插件自身的 ctx；ns 过滤不可省（见上方投递语义说明）。
+  ctx.on('settings/document-updated', (ns: unknown) => {
+    if (ns !== ENTRY_ID && ns !== SETTINGS_NAMESPACE) return;
+    const row = readOwnRow();
+    if (!row) return;
+    applyRow(row, 'updated from WebUI');
   });
 
   // dsh 启动器对 unhandledRejection 是 fail-loud 策略（打印 "fatal load failure" 并
