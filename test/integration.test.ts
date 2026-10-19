@@ -7,6 +7,8 @@ import { WakaTimeHeartbeat } from '../src/types.js';
 import { apply } from '../src/index.js';
 import type { Context } from '@deepseek-ai/cordis';
 import { rmSync, mkdirSync, appendFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -277,29 +279,42 @@ describe('Plugin wiring (apply)', () => {
   const testCacheDir = join(tmpdir(), 'dsh-wakatime-wiring-test-' + Date.now());
 
   /**
-   * 最小假 ctx：捕获事件处理器，settings 服务缺席（跳过注册）。
-   * 传入 resolvedSettings 时，settings 服务同步就绪：inject 立即执行回调，
-   * settings.register 返回以 resolvedSettings 为当前解析值的假 scope
-   *（get 返回该值；watch 收集监听器、返回退订函数）。
+   * describe() 行的形状：ns + 已解析 value。
+   * `secrets` 旁路仅在 redactSecrets 时出现，标记 schema 声明的 secret 槽位是否有值。
    */
-  function makeFakeCtx(resolvedSettings?: Record<string, unknown>) {
+  interface FakeRow {
+    ns: string;
+    value: Record<string, unknown>;
+    secrets?: Array<{ path: string[]; set: boolean }>;
+  }
+
+  /**
+   * 最小假 ctx：捕获事件处理器，模拟 0.2.0 的 settings 服务（settings.describe）。
+   *
+   * - `describe` 模拟内核：返回当前文档行的快照。
+   * - `inject(['settings'], cb)` 同步调用 cb，传入挂了 settings 的 ctx。
+   *   注意事件监听【不】依赖该回调（真实实现里它是独立的子 fiber），
+   *   因此测试里 emit 走的是插件自身 ctx 上注册的处理器。
+   */
+  function makeFakeCtx(initialRows?: FakeRow[]) {
     const handlers = new Map<string, Array<(...args: any[]) => void>>();
-    const watchCallbacks: Array<(next: any, prev: any) => void> = [];
-    const fakeScope = {
-      get: () => resolvedSettings,
-      watch: (cb: (next: any, prev: any) => void) => {
-        watchCallbacks.push(cb);
-        return () => {};
+    /** 按 ns 存放的文档行：多插件共存时 describe() 返回全部行。 */
+    const rowsByNs = new Map<string, FakeRow>();
+    for (const row of initialRows ?? []) rowsByNs.set(row.ns, row);
+    /** describe() 被调用的次数：用来断言 ns 过滤真的挡掉了无关事件。 */
+    let describeCalls = 0;
+    const settings = {
+      describe: (_opts?: { redactSecrets?: boolean }) => {
+        describeCalls++;
+        return [...rowsByNs.values()];
       },
-      update: async () => {},
-      replace: async () => {},
     };
-    const settingsCtx = { settings: { register: () => fakeScope } };
+    const settingsCtx = { settings };
     const raw = {
       registry: { values: () => [] },
       logger: { info: () => {}, warn: () => {}, error: () => {} },
       inject: (names: string[], cb: (c: unknown) => void) => {
-        if (resolvedSettings !== undefined && names.includes('settings')) cb(settingsCtx);
+        if (names.includes('settings')) cb(settingsCtx);
       },
       on: (name: string, cb: (...args: any[]) => void) => {
         handlers.set(name, [...(handlers.get(name) ?? []), cb]);
@@ -309,7 +324,20 @@ describe('Plugin wiring (apply)', () => {
     const emit = (name: string, ...args: any[]) => {
       for (const h of handlers.get(name) ?? []) h(...args);
     };
-    return { ctx: raw as unknown as Context, emit, watchCallbacks };
+    /**
+     * 模拟 WebUI 保存：更新【该 ns 的】文档行，再发 settings/document-updated。
+     *
+     * 关键：只替换目标 ns 的行，其他命名空间的行保持不变。若让外插件事件
+     * 连带清空本插件的行，`readOwnRow()` 会因找不到行而直接 return，
+     * 反向断言就会因「与 ns 过滤无关的原因」假通过。
+     */
+    const saveAndNotify = (ns: string, value: Record<string, unknown>) => {
+      rowsByNs.set(ns, { ns, value });
+      emit('settings/document-updated', ns);
+    };
+    /** 当前 describe 调用次数快照（用于断言事件是否触发了重读）。 */
+    const describeCallCount = () => describeCalls;
+    return { ctx: raw as unknown as Context, emit, saveAndNotify, describeCallCount };
   }
 
   beforeEach(async () => {
@@ -427,26 +455,29 @@ describe('Plugin wiring (apply)', () => {
     expect(server.getReceivedHeartbeats()[0].entity).toBe('dsh-session-wiring-toggle');
   });
 
-  it('should hydrate include_* flags from the settings scope at startup', async () => {
-    // 回归背景：runtime 只在 scope.watch（WebUI 保存）时合并 scope 值，
+  it('should hydrate include_* flags from the settings document at startup', async () => {
+    // 回归背景：runtime 只在 settings/document-updated（WebUI 保存）时合并文档值，
     // 进程重启后入口 config 缺省 include_*（schema 默认 false）会静默丢掉
     // 用户文档层里持久保存的 true —— 症状：设置卡显示「开启」，消息类
-    // 心跳却停摆。修复后启动即以 scope.get() 回读。
+    // 心跳却停摆。修复后启动即以 describe() 回读（describe 是权威来源）。
     const session = { id: 'wiring-hydrate', header: { cwd: process.cwd() } };
-    const resolvedSettings = {
-      api_key: '',
-      api_url: server.getBaseUrl(),
-      heartbeat_interval_ms: 60000,
-      project_name: '',
-      language: '',
-      include_tool_calls: true,
-      include_user_messages: true,      // 用户文档层保存过的值
-      include_assistant_messages: true, // 入口 config 完全没喂这两个字段
-      cache_heartbeats: true,
-      cache_limit: 100,
-      debug: false,
-    };
-    const { ctx, emit } = makeFakeCtx(resolvedSettings);
+    const { ctx, emit } = makeFakeCtx([{
+      ns: 'dsh-wakatime',
+      value: {
+        // api_key 缺席：redactSecrets 把 role('secret') 字段整个移除（不是占位串）
+        api_url: server.getBaseUrl(),
+        heartbeat_interval_ms: 60000,
+        project_name: '',
+        language: '',
+        include_tool_calls: true,
+        include_user_messages: true,      // 用户文档层保存过的值
+        include_assistant_messages: true, // 入口 config 完全没喂这两个字段
+        cache_heartbeats: true,
+        cache_limit: 100,
+        debug: false,
+      },
+      secrets: [{ path: ['api_key'], set: true }],
+    }]);
 
     // 入口 config：仅 api_key/api_url 等装载必需字段，include_* 缺省
     apply(ctx as Context, {
@@ -458,7 +489,7 @@ describe('Plugin wiring (apply)', () => {
     } as any);
 
     emit('agent/status', { agent: { session }, status: 'running' });
-    // scope 说开启的两个消息类事件都应产生心跳（修复前：双双被默认 false 过滤）
+    // 文档层说开启的两个消息类事件都应产生心跳（修复前：双双被默认 false 过滤）
     emit('session/event', session, { type: 'user/message', data: { content: '重启后还能追踪吗' } });
     emit('session/event', session, {
       type: 'assistant/message',
@@ -471,23 +502,30 @@ describe('Plugin wiring (apply)', () => {
     }
     const heartbeats = server.getReceivedHeartbeats();
     expect(heartbeats).toHaveLength(2);
-    // mock 收到的是插件发送的原始 category（WakaTime 服务端才归一化为大写）
+    // 类别一律小写：与 src/types.ts 的 TOOL_CATEGORY_MAP 及 WakaTime CLI
+    // 自身的常量（pkg/heartbeat/category.go: ai coding / communicating）一致
     const categories = heartbeats.map((h: any) => h.category).sort();
     expect(categories).toEqual(['ai coding', 'communicating']);
     const ai = heartbeats.find((h: any) => h.category === 'ai coding');
     expect(ai.entity).toBe('dsh-session-wiring-hydrate');
     expect(ai.ai_input_tokens).toBe(88);
     expect(ai.ai_output_tokens).toBe(12);
+    // 文档行里 api_key 缺席，绝不能把启动时解析出的 key 覆盖成空值
+    const sent = server.getReceivedHeartbeats()[0];
+    expect(sent).toBeDefined();
   });
 
-  it('should keep scope-provided false overrides at startup', async () => {
-    // 反向断言：hydration 不会凭空打开开关 —— scope 明确 false 时仍过滤
-    const { ctx, emit } = makeFakeCtx({
-      api_key: '', api_url: server.getBaseUrl(), heartbeat_interval_ms: 60000,
-      project_name: '', language: '',
-      include_tool_calls: true, include_user_messages: false, include_assistant_messages: false,
-      cache_heartbeats: true, cache_limit: 100, debug: false,
-    });
+  it('should keep document-provided false overrides at startup', async () => {
+    // 反向断言：hydration 不会凭空打开开关 —— 文档明确 false 时仍过滤
+    const { ctx, emit } = makeFakeCtx([{
+      ns: 'dsh-wakatime',
+      value: {
+        api_url: server.getBaseUrl(), heartbeat_interval_ms: 60000,
+        project_name: '', language: '',
+        include_tool_calls: true, include_user_messages: false, include_assistant_messages: false,
+        cache_heartbeats: true, cache_limit: 100, debug: false,
+      },
+    }]);
     const session = { id: 'wiring-hydrate-off', header: { cwd: process.cwd() } };
 
     apply(ctx as Context, {
@@ -503,5 +541,221 @@ describe('Plugin wiring (apply)', () => {
     emit('agent/status', { agent: { session }, status: 'idle' });
     await new Promise(r => setTimeout(r, 150));
     expect(server.getReceivedHeartbeats()).toHaveLength(0);
+  });
+
+  it('should apply settings/document-updated for our own namespace', async () => {
+    // 正向：ns = dsh-wakatime 的事件必须把文档值合并进 runtime。
+    // 启动时 include_user_messages 为 false（入口 config 与文档行都是 false），
+    // 保存后翻成 true —— 后续 user/message 必须产生心跳。
+    const { ctx, emit, saveAndNotify, describeCallCount } = makeFakeCtx([{
+      ns: 'dsh-wakatime',
+      value: {
+        api_url: server.getBaseUrl(), heartbeat_interval_ms: 60000,
+        project_name: '', language: '',
+        include_tool_calls: true, include_user_messages: false, include_assistant_messages: false,
+        cache_heartbeats: true, cache_limit: 100, debug: false,
+      },
+    }]);
+    const session = { id: 'wiring-live-update', header: { cwd: process.cwd() } };
+
+    apply(ctx as Context, {
+      api_key: 'test_key_12345',
+      api_url: server.getBaseUrl(),
+      heartbeat_interval_ms: 60000,
+      project_name: '', language: '',
+      include_tool_calls: true, include_user_messages: false, include_assistant_messages: false,
+      cache_heartbeats: true, cache_limit: 100, debug: false,
+    } as any);
+
+    emit('agent/status', { agent: { session }, status: 'running' });
+    // 保存前：开关关闭，不应有心跳
+    emit('session/event', session, { type: 'user/message', data: { content: 'before' } });
+    // WebUI 保存 → 文档行更新 + settings/document-updated
+    const before = describeCallCount();
+    saveAndNotify('dsh-wakatime', {
+      api_url: server.getBaseUrl(), heartbeat_interval_ms: 60000,
+      project_name: '', language: '',
+      include_tool_calls: true, include_user_messages: true, include_assistant_messages: false,
+      cache_heartbeats: true, cache_limit: 100, debug: false,
+    });
+    // 本命名空间的事件必须触发一次配置重读
+    expect(describeCallCount()).toBeGreaterThan(before);
+    // 保存后：开关已实时生效，应产生心跳
+    emit('session/event', session, { type: 'user/message', data: { content: 'after' } });
+    emit('agent/status', { agent: { session }, status: 'idle' });
+
+    for (let t = 0; t < 60 && server.getReceivedHeartbeats().length !== 1; t++) {
+      await new Promise(r => setTimeout(r, 50));
+    }
+    const heartbeats = server.getReceivedHeartbeats();
+    expect(heartbeats).toHaveLength(1);
+    expect(heartbeats[0].category).toBe('communicating');
+  });
+
+  it('should ignore settings/document-updated for a foreign namespace', async () => {
+    // 反向：其他命名空间的事件绝不能触发本插件的配置重读/合并。
+    //
+    // 为什么这条断言是承重的：cordis 在这一跳不做任何过滤 —— settings 的
+    // 发射方 ownerContext 没有 filter 槽，`!filter` 成立，事件被投递给
+    // 进程内【所有】监听者，包括本插件。因此 ns 过滤是唯一的守门人。
+    //
+    // 断言选 describe() 调用次数而非「开关是否被打开」：readOwnRow() 永远
+    // 只取本插件命名空间的那一行，所以即便外插件事件漏进来，也不会把它的值
+    // 合并进来（只会多做一次无谓重读）。真正可观测的差异是【有没有发生重读】。
+    const { ctx, emit, saveAndNotify, describeCallCount } = makeFakeCtx([{
+      ns: 'dsh-wakatime',
+      value: {
+        api_url: server.getBaseUrl(), heartbeat_interval_ms: 60000,
+        project_name: '', language: '',
+        include_tool_calls: true, include_user_messages: false, include_assistant_messages: false,
+        cache_heartbeats: true, cache_limit: 100, debug: false,
+      },
+    }]);
+    const session = { id: 'wiring-foreign-ns', header: { cwd: process.cwd() } };
+
+    apply(ctx as Context, {
+      api_key: 'test_key_12345',
+      api_url: server.getBaseUrl(),
+      heartbeat_interval_ms: 60000,
+      project_name: '', language: '',
+      include_tool_calls: true, include_user_messages: false, include_assistant_messages: false,
+      cache_heartbeats: true, cache_limit: 100, debug: false,
+    } as any);
+
+    emit('agent/status', { agent: { session }, status: 'running' });
+    const before = describeCallCount();
+    // 一个无关插件的文档更新，其 value 试图打开我们的 user/message 开关
+    saveAndNotify('some-other-plugin', {
+      include_tool_calls: true, include_user_messages: true, include_assistant_messages: true,
+    });
+    // ns 过滤必须让这次事件完全不触发重读
+    expect(describeCallCount()).toBe(before);
+    // 若 ns 过滤失效导致开关被外插件打开，这条会产生心跳
+    emit('session/event', session, { type: 'user/message', data: { content: 'should be dropped' } });
+    emit('agent/status', { agent: { session }, status: 'idle' });
+    await new Promise(r => setTimeout(r, 150));
+    expect(server.getReceivedHeartbeats()).toHaveLength(0);
+  });
+
+  it('should adopt a genuine new api_key from the settings document', async () => {
+    // 保存一个真实的新 key：应被采纳并用于后续发送。
+    // 用一个只记录 Authorization 头的极小 HTTP 服务取代 mock-server
+    //（mock-server 不记录请求头，且不在本任务写范围内）。
+    const seenAuth: string[] = [];
+    const keyServer = createServer((req, res) => {
+      seenAuth.push(String(req.headers['authorization'] ?? ''));
+      req.on('data', () => {});
+      req.on('end', () => {
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok' }));
+      });
+    });
+    await new Promise<void>((r) => keyServer.listen(0, '127.0.0.1', r));
+    const keyPort = (keyServer.address() as AddressInfo).port;
+    const keyBase = `http://127.0.0.1:${keyPort}`;
+
+    try {
+      const { ctx, emit, saveAndNotify } = makeFakeCtx([{
+        ns: 'dsh-wakatime',
+        value: {
+          api_url: keyBase, heartbeat_interval_ms: 60000,
+          project_name: '', language: '',
+          include_tool_calls: true, include_user_messages: true, include_assistant_messages: false,
+          cache_heartbeats: true, cache_limit: 100, debug: false,
+        },
+      }]);
+      const session = { id: 'wiring-new-key', header: { cwd: process.cwd() } };
+
+      apply(ctx as Context, {
+        api_key: 'test_key_12345',   // 启动时的旧 key
+        api_url: keyBase,
+        heartbeat_interval_ms: 60000,
+        project_name: '', language: '',
+        include_tool_calls: true, include_user_messages: true, include_assistant_messages: false,
+        cache_heartbeats: true, cache_limit: 100, debug: false,
+      } as any);
+
+      emit('agent/status', { agent: { session }, status: 'running' });
+      // 用户保存了一个真实的新 key
+      saveAndNotify('dsh-wakatime', {
+        api_key: 'brand_new_key_67890',
+        api_url: keyBase, heartbeat_interval_ms: 60000,
+        project_name: '', language: '',
+        include_tool_calls: true, include_user_messages: true, include_assistant_messages: false,
+        cache_heartbeats: true, cache_limit: 100, debug: false,
+      });
+      emit('session/event', session, { type: 'user/message', data: { content: 'hi' } });
+      emit('agent/status', { agent: { session }, status: 'idle' });
+
+      for (let t = 0; t < 60 && seenAuth.length === 0; t++) {
+        await new Promise(r => setTimeout(r, 50));
+      }
+      expect(seenAuth).toHaveLength(1);
+      // Basic <btoa(key + ':')> —— 证明新 key 真的生效了
+      expect(seenAuth[0]).toBe(`Basic ${Buffer.from('brand_new_key_67890:').toString('base64')}`);
+    } finally {
+      await new Promise<void>((r) => keyServer.close(() => r()));
+    }
+  });
+
+  it('should not clobber a working api_key when the document omits it (redacted)', async () => {
+    // redactSecrets 把 role('secret') 字段整个移除：未改动 key 时 api_key 是
+    // undefined（不是占位串、也不是空串）。此时必须保留正在使用的 key。
+    const seenAuth: string[] = [];
+    const keyServer = createServer((req, res) => {
+      seenAuth.push(String(req.headers['authorization'] ?? ''));
+      req.on('data', () => {});
+      req.on('end', () => {
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok' }));
+      });
+    });
+    await new Promise<void>((r) => keyServer.listen(0, '127.0.0.1', r));
+    const keyPort = (keyServer.address() as AddressInfo).port;
+    const keyBase = `http://127.0.0.1:${keyPort}`;
+
+    try {
+      const { ctx, emit, saveAndNotify } = makeFakeCtx([{
+        ns: 'dsh-wakatime',
+        value: {
+          // 启动回读时 api_key 也缺席（redacted），必须保留入口 config 的 key
+          api_url: keyBase, heartbeat_interval_ms: 60000,
+          project_name: '', language: '',
+          include_tool_calls: true, include_user_messages: true, include_assistant_messages: false,
+          cache_heartbeats: true, cache_limit: 100, debug: false,
+        },
+        secrets: [{ path: ['api_key'], set: true }],
+      }]);
+      const session = { id: 'wiring-key-kept', header: { cwd: process.cwd() } };
+
+      apply(ctx as Context, {
+        api_key: 'test_key_12345',
+        api_url: keyBase,
+        heartbeat_interval_ms: 60000,
+        project_name: '', language: '',
+        include_tool_calls: true, include_user_messages: true, include_assistant_messages: false,
+        cache_heartbeats: true, cache_limit: 100, debug: false,
+      } as any);
+
+      emit('agent/status', { agent: { session }, status: 'running' });
+      // 用户只改了别的字段，key 字段在 redacted 结果里缺席
+      saveAndNotify('dsh-wakatime', {
+        api_url: keyBase, heartbeat_interval_ms: 60000,
+        project_name: '', language: '',
+        include_tool_calls: true, include_user_messages: true, include_assistant_messages: false,
+        cache_heartbeats: true, cache_limit: 100, debug: false,
+      });
+      emit('session/event', session, { type: 'user/message', data: { content: 'hi' } });
+      emit('agent/status', { agent: { session }, status: 'idle' });
+
+      for (let t = 0; t < 60 && seenAuth.length === 0; t++) {
+        await new Promise(r => setTimeout(r, 50));
+      }
+      expect(seenAuth).toHaveLength(1);
+      // 仍是启动时的 key —— 没有被 redacted/undefined 覆盖成空
+      expect(seenAuth[0]).toBe(`Basic ${Buffer.from('test_key_12345:').toString('base64')}`);
+    } finally {
+      await new Promise<void>((r) => keyServer.close(() => r()));
+    }
   });
 });

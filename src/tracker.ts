@@ -20,7 +20,8 @@ interface ToolCallEvent {
 interface UserMessageEvent {
   type: 'user/message';
   data: {
-    content: string;
+    /** DSH 0.2.0+ content 是 content blocks 数组；旧版本可能是纯字符串。 */
+    content: string | Array<{ type: string; text?: string; [k: string]: unknown }>;
   };
 }
 
@@ -140,11 +141,25 @@ export class FileTracker {
   }
 
   private async trackUserMessageInner(event: UserMessageEvent): Promise<void> {
-    const content = typeof event?.data?.content === 'string' ? event.data.content : '';
-    this.lastPromptLength = content.length > 0 ? content.length : undefined;
+    // DSH 0.2.0+: content 是 content blocks 数组 [{type:'text', text:'...'}, ...]
+    // 旧版本: content 可能是纯字符串
+    const raw = event?.data?.content;
+    let textLen = 0;
+    if (typeof raw === 'string') {
+      textLen = raw.length;
+    } else if (Array.isArray(raw)) {
+      for (const block of raw) {
+        if (block?.type === 'text' && typeof block.text === 'string') {
+          textLen += block.text.length;
+        }
+      }
+    }
+    this.lastPromptLength = textLen > 0 ? textLen : undefined;
     const heartbeat: WakaTimeHeartbeat = {
       entity: `dsh-session-${this.session.id}`,
       type: 'app',
+      // 类别一律小写，与 TOOL_CATEGORY_MAP（types.ts）及 WakaTime 其他类别保持一致；
+      // WakaTime 服务端负责展示层归一化。
       category: 'communicating',
       time: Date.now() / 1000,
       project: await this.resolveProject(),
@@ -158,7 +173,8 @@ export class FileTracker {
     const heartbeat: WakaTimeHeartbeat = {
       entity: `dsh-session-${this.session.id}`,
       type: 'app',
-      // WakaTime 为 GenAI 活动提供的专用类别，驱动其 AI Coding 面板统计
+      // WakaTime 为 GenAI 活动提供的专用类别，驱动其 AI Coding 面板统计。
+      // 小写与 TOOL_CATEGORY_MAP 及其余类别统一（WakaTime 服务端做展示层归一化）。
       category: 'ai coding',
       time: Date.now() / 1000,
       project: await this.resolveProject(),

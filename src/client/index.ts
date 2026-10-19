@@ -38,6 +38,36 @@ const SECTION_LABELS: Record<string, string> = {
 const SETTINGS_SECTION_ID = 'dsh-wakatime';
 
 /**
+ * 插件 profile 条目 id（与 `cordis.patch.yml` 的 `id: dsh-wakatime` 一致）。
+ * 详情页卡片的寻址键是条目 id，不是 settings 命名空间，故与
+ * SETTINGS_NAMESPACE_CANDIDATES 分开声明。
+ */
+const ENTRY_ID = 'dsh-wakatime';
+
+/**
+ * `plugins.bundle.config` 槽位的 key —— **必须是插件包名**（`package.json` 的
+ * `name`），不是 settings 命名空间、也不是条目 id。
+ *
+ * 宿主侧三处证据（0.2.0-rc.2）：
+ *  - 槽位契约 `dsh-client-ui-plugin-manager/lib/types/client/slot-contract.d.ts`
+ *    原文：*"A bundle's own configuration, keyed by the bundle's **package name**"*；
+ *  - `PluginManagerPage` 渲染时以 `renderSlot('plugins.bundle.config',
+ *    { view: 'page' }, { entryKey: pkg.name })` 派发 —— 查的就是包名；
+ *  - `configured` 为假时整段配置区直接不渲染（`configured ? <section…> : null`），
+ *    且 `configured` 取自 `ledger.bundles.has(pkg.name)`（`bundles:
+ *    keysOf('plugins.bundle.config')`）—— key 不匹配即 `configured=false`
+ *    → **卡片静默不渲染**，没有任何报错可循。
+ *
+ * 故这里固定用包名常量，**不要**改回 `SETTINGS_NAMESPACE_CANDIDATES[0]` /
+ * `ENTRY_ID` 之类的数组下标或别名：本插件三者当前恰好都是 `dsh-wakatime`，
+ * 一旦命名空间候选顺序调整或条目 id 改名，取值就会悄悄漂移、卡片无声消失。
+ * （参考实现 dsh-suggest-ghost 的包名 `dsh-suggest-ghost` 与其条目 id
+ * `suggest-ghost` 不同，正是靠「包名硬编码 + 条目 id 只用于
+ * `configForms.get()`」区分这两套域。）
+ */
+const BUNDLE_PACKAGE_NAME = 'dsh-wakatime';
+
+/**
  * 宿主 `remote` 服务的最小结构视图（读 `remote.settings` 用）。
  *
  * **必须走 `ctx.get('remote')`，不能读 `ctx.remote` 属性。** 0.1.7 的 client runner
@@ -191,8 +221,43 @@ const inject = ['remote', 'remote.settings', 'slots', 'locale', 'configForms'];
 export function apply(ctx: Context): void {
   const slots = ctx.get('slots');
   const remoteForCard = remoteOf(ctx);
-  if (slots === undefined || remoteForCard?.settings === undefined) return;
+  // 两个宿主服务各有独立职责：`slots` 缺任一卡片都无处注册；`remote.settings`
+  // 只决定设置页能否取数，缺席时仍要注册插件详情页卡片（见下）。
+  if (slots === undefined) return;
   const locale = ctx.get('locale') as LocaleFaceLike | undefined;
+
+  // 插件详情页卡片（0.1.7+ / 0.2.0+）：configForms 表单 + `plugins.bundle.config` 卡片。
+  // 两个域要分清：`configForms.get()` 用**条目 id**（`cordis.patch.yml` 的
+  // `id: dsh-wakatime`）；`plugins.bundle.config` 的 key 用**插件包名**（见 BUNDLE_PACKAGE_NAME）。
+  // 注意：configForms 不在顶层 inject，用嵌套 ctx.inject 按需等待（与 later 插件一致）。
+  // 必须在提前返回之前注册，否则 remote.settings 缺失时卡片不会显示。
+  const forms = ctx.get('configForms') as any;
+  if (forms !== undefined && typeof forms.get === 'function' && typeof forms.whileServed === 'function') {
+    const formScope = forms.get(ENTRY_ID);
+    ctx.effect(
+      () =>
+        forms.whileServed([ENTRY_ID], () =>
+          slots.inject('plugins.bundle.config', () =>
+            slots.register({
+              name: 'plugins.bundle.config',
+              key: BUNDLE_PACKAGE_NAME,
+              locale: 'dsh-wakatime',
+              inject: () => ({ scope: formScope, locale, surface: 'detail' as const }),
+            }, WakaTimeCard),
+          ),
+        ),
+      'dsh-wakatime: plugins-page card',
+    );
+  }
+
+  // 设置对话框中的设置页：默认不显示，由插件详情页的开关控制。
+  // 开关状态存储在 localStorage 中，key 为 'dsh-wakatime:show-settings-section'。
+  if (remoteForCard?.settings === undefined) return;
+
+  const SHOW_SETTINGS_KEY = 'dsh-wakatime:show-settings-section';
+  const showSettingsSection = typeof localStorage !== 'undefined' && localStorage.getItem(SHOW_SETTINGS_KEY) === 'true';
+
+  if (!showSettingsSection) return;
 
   // scope 只建一次并挂在注册表上（生命周期由槽位 disposer 负责）。
   const cardScope = remoteSettingsScope(remoteForCard, SETTINGS_NAMESPACE_CANDIDATES);
@@ -204,35 +269,13 @@ export function apply(ctx: Context): void {
       const active = locale === undefined ? 'zh' : locale.getSnapshot().active;
       return active === 'en' ? SECTION_LABELS.en : SECTION_LABELS.zh;
     },
-    inject: () => ({ scope: cardScope, locale }),
+    inject: () => ({ scope: cardScope, locale, surface: 'settings' as const }),
   }, WakaTimeCard));
   if (typeof disposeSection === 'function') {
     ctx.effect(() => () => {
       disposeSection();
       cardScope.dispose();
     });
-  }
-
-  // 插件详情页卡片（0.1.7+ / 0.2.0+）：configForms 表单 + `plugins.bundle.config` 卡片。
-  // 寻址键是条目 id（`cordis.patch.yml` 的 `id: dsh-wakatime`），不是 settings namespace。
-  const ENTRY_ID = 'dsh-wakatime';
-  const forms = ctx.get('configForms') as any;
-  if (forms !== undefined && typeof forms.get === 'function' && typeof forms.whileServed === 'function') {
-    const formScope = forms.get(ENTRY_ID);
-    ctx.effect(
-      () =>
-        forms.whileServed([ENTRY_ID], () =>
-          slots.inject('plugins.bundle.config', () =>
-            slots.register({
-              name: 'plugins.bundle.config',
-              key: SETTINGS_NAMESPACE_CANDIDATES[0],
-              locale: 'dsh-wakatime',
-              inject: () => ({ scope: formScope, locale }),
-            }, WakaTimeCard),
-          ),
-        ),
-      'dsh-wakatime: plugins-page card',
-    );
   }
 }
 

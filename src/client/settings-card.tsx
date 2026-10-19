@@ -74,6 +74,8 @@ export interface WakaTimeCardProps {
   mirror?: SettingsMirrorFace;
   /** 宿主 locale 服务（可选）：卡片文案跟随宿主界面语言，缺失回退中文。 */
   locale?: LocaleFaceLike;
+  /** 渲染表面：`'detail'` = 插件详情页卡片（显示「在设置中显示」开关）；`'settings'` = 设置对话框页。 */
+  surface?: 'detail' | 'settings';
 }
 
 /** 草稿状态：key -> 用户输入的原始文本（布尔为 'true'/'false'）。 */
@@ -275,7 +277,7 @@ function SecretField({ id, def, text, configured, disabled, t, onEdit }: {
 }
 
 /** 设置卡片主组件：staged 编辑 + 保存/放弃 + 回读校验。 */
-export function WakaTimeCard({ scope, mirror, locale }: WakaTimeCardProps): React.ReactElement | null {
+export function WakaTimeCard({ scope, mirror, locale, surface }: WakaTimeCardProps): React.ReactElement | null {
   injectStyles();
   // 文案语言：订阅宿主 locale 快照，语言切换实时重渲染（缺失回退中文）。
   const { t } = useWkT(locale);
@@ -291,6 +293,22 @@ export function WakaTimeCard({ scope, mirror, locale }: WakaTimeCardProps): Reac
   const [edits, setEdits] = useState<Edits>({});
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
+
+  // 「在设置中显示」开关：仅详情页显示，控制 settings.section 是否注册。
+  // localStorage 非响应式，切换后需刷新页面生效。
+  const SHOW_SETTINGS_KEY = 'dsh-wakatime:show-settings-section';
+  const [showSettings, setShowSettings] = useState<boolean>(() => {
+    if (typeof localStorage === 'undefined') return false;
+    return localStorage.getItem(SHOW_SETTINGS_KEY) === 'true';
+  });
+  const toggleShowSettings = (): void => {
+    const next = !showSettings;
+    setShowSettings(next);
+    if (typeof localStorage !== 'undefined') {
+      if (next) localStorage.setItem(SHOW_SETTINGS_KEY, 'true');
+      else localStorage.removeItem(SHOW_SETTINGS_KEY);
+    }
+  };
 
   if (snap.status === 'unavailable') return null; // 命名空间未暴露时不显示卡片
 
@@ -424,6 +442,32 @@ export function WakaTimeCard({ scope, mirror, locale }: WakaTimeCardProps): Reac
   return (
     <div className="wk-form">
       {!writable ? <p className="wk-readOnly" role="status">{t.readOnlyNote}</p> : null}
+      {/* 仅详情页显示：控制设置对话框中是否出现本插件的设置页。
+       *  localStorage 非响应式，切换后需刷新页面生效。 */}
+      {surface === 'detail' && (
+        <section className="wk-section" aria-labelledby="wk-section-display">
+          <h3 className="wk-section-heading" id="wk-section-display">{t.sections.display}</h3>
+          <div className="wk-section-fields">
+            <div className="wk-field">
+              <div className="wk-toggle-row">
+                <div className="wk-label-group">
+                  <label className="wk-toggle-label" htmlFor="wk-show-settings">{t.showInSettings}</label>
+                </div>
+                <button
+                  type="button"
+                  id="wk-show-settings"
+                  role="switch"
+                  aria-checked={showSettings}
+                  aria-label={t.showInSettings}
+                  className="wk-toggle-switch"
+                  onClick={toggleShowSettings}
+                />
+              </div>
+              <p className="wk-toggle-description">{t.showInSettingsHint}</p>
+            </div>
+          </div>
+        </section>
+      )}
       {SECTIONS.map((section) => (
         <section className="wk-section" key={section} aria-labelledby={`wk-section-${section}`}>
           <h3 className="wk-section-heading" id={`wk-section-${section}`}>{t.sections[section]}</h3>
