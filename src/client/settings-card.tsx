@@ -6,7 +6,7 @@
  * 无卡片 chrome（无边框/背景/可折叠头部），字段按 section 分组（api /
  * tracking / cacheDebug），每组有 13px/600 标题；布尔字段用 toggle 行
  * （label 左 + switch 右，说明常驻）；文本/数值/secret 字段的说明收进
- * 24×24 帮助按钮（12px 圆圈问号，点击展开）；底部保留保存/放弃按钮。
+ * 24×24 帮助按钮（12px 官方图标集 `IconInfoOutlineRegular`，点击展开）；底部保留保存/放弃按钮。
  *
  * 行为不变：字段为「label 行（覆盖徽章 + 重置）→ 输入控件 → 说明/错误」
  * 结构；非法草稿阻塞保存；保存后回读校验，未落地的草稿保留并报错；
@@ -24,6 +24,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { IconInfoOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { FieldKind, MirrorSnapshotLike, ScopeLike, SettingsMirrorFace } from './mirror.ts';
 import { fieldLanded, secretSlotSet } from './mirror.ts';
 import { injectStyles } from './styles.ts';
@@ -110,7 +111,12 @@ function OverriddenBadge({ disabled, t, onReset }: {
   );
 }
 
-/** 帮助按钮（对齐官方 _helpButton_：24×24、radius 8px、12px 圆圈问号图标）。 */
+/**
+ * 帮助按钮（对齐官方 SettingsForm 的 helpButton：24×24、radius 8px，图标直接
+ * 用官方图标集 `IconInfoOutlineRegular size={12}`——与宿主渲染的同一组件，
+ * 不再手写内联 SVG。注：该图标几何是「圆圈 + 感叹号」，非问号；图标集里没有
+ * `IconHelpOutlineRegular` 这个名字。
+ */
 function HelpButton({ open, label, controls, onToggle }: {
   open: boolean;
   label: string;
@@ -126,11 +132,7 @@ function HelpButton({ open, label, controls, onToggle }: {
       aria-controls={controls}
       onClick={onToggle}
     >
-      <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-        <path d="M12.5757 7.00012C12.5757 3.92085 10.0794 1.42463 7.00012 1.42456C3.9208 1.42456 1.42456 3.9208 1.42456 7.00012C1.42463 10.0794 3.92085 12.5757 7.00012 12.5757C10.0793 12.5756 12.5756 10.0793 12.5757 7.00012ZM13.8002 7.00012C13.8001 10.7559 10.7559 13.8001 7.00012 13.8002C3.2443 13.8002 0.199291 10.7559 0.199219 7.00012C0.199219 3.24426 3.24426 0.199219 7.00012 0.199219C10.7559 0.199291 13.8002 3.2443 13.8002 7.00012Z" fill="currentColor" />
-        <path d="M7.6127 3.18921V4.55986H6.38735V3.18921H7.6127Z" fill="currentColor" />
-        <path d="M7.6127 5.68921V10.8109H6.38735V5.68921H7.6127Z" fill="currentColor" />
-      </svg>
+      <IconInfoOutlineRegular size={12} />
     </button>
   );
 }

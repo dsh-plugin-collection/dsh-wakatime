@@ -12,6 +12,9 @@ import { build } from 'esbuild';
 execSync('npx tsc -p tsconfig.json', { stdio: 'inherit' });
 
 // 2. client 端：esbuild 打包（type-only imports 剥离；react 从宿主运行时解析）
+//    `@deepseek-ai/dsh-client-ui-primitives` 同样必须保持 external：官方图标集是
+//    宿主 web 端静态模块表的常驻成员（与 dsh-client-locale 等官方 client 包同款
+//    做法），打进包会整套复制图标；由 package.json 的 `dsh.client.inject` 声明注入。
 const result = await build({
   entryPoints: ['src/client/index.ts'],
   bundle: true,
@@ -22,7 +25,7 @@ const result = await build({
   logLevel: 'warning',
   loader: { '.tsx': 'tsx', '.ts': 'ts' },
   jsx: 'automatic',
-  external: ['react', 'react/jsx-runtime', 'react/jsx-dev-runtime'],
+  external: ['react', 'react/jsx-runtime', 'react/jsx-dev-runtime', '@deepseek-ai/dsh-client-ui-primitives'],
 });
 
 const body = result.outputFiles[0].text;
