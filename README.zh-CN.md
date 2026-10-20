@@ -45,6 +45,8 @@ DeepSeek Harness（DSH）的 WakaTime 心跳上报插件。
 
 闸门实现是宿主 `@deepseek-ai/dsh-app-boot/lib/index.js` 的 `evaluatePluginCompatibility`（第 311 行）：只读插件 `package.json`，不加载插件代码。
 
+以下行号对应 `@deepseek-ai/dsh@0.2.1-rc.2` 的发布产物，仅作定位示意；核对以符号名为准（`evaluatePluginCompatibility` / `validateVolatilePlacement` / slot-contract 的 `plugins.bundle.config`）。
+
 | 条件 | 宿主行为 | 代码位置 |
 |---|---|---|
 | 有 `engines.dsh` | **只比较这一个区间**，`peerDependencies` 被忽略 | `dsh-app-boot/lib/index.js:281-284` |
@@ -52,7 +54,7 @@ DeepSeek Harness（DSH）的 WakaTime 心跳上报插件。
 | 区间比较方式 | `semver.satisfies(运行版本, 区间, { includePrerelease: true })`，预发布版参与比较 | `dsh-app-boot/lib/index.js:277` |
 | 判定不通过 | stderr 打印 `dsh: disabling profile plugin row "<条目>": Plugin <name>@<version> is incompatible with dsh <ver>: requirements …`，该条目被禁用；提示可用 `dsh plugin allow-version` 逐版本豁免 | `dsh-app-boot/lib/index.js:2308` 与 `:335` |
 
-> **给插件作者的硬教训：peerDependencies 要写区间，不要写精确版本。** 宿主 0.2.1 一方包对 `@deepseek-ai/dsh-*` 的 peers 全部精确 pin 到同一版本（例：`@deepseek-ai/dsh-agent@0.2.1-rc.2` 的 dsh peers 全是 `0.2.1-rc.2`），插件照抄这种写法会在下一个 rc 上被闸门整片禁用。实证见本机 `~/.dsh/dsh-web.log:9338`：`@deepseek-ai/dsh-webhook@0.2.0-rc.2` 因 peers 写死 `"0.2.0-rc.2"`，在 dsh `0.2.1-rc.2` 下 `webhook-runtime` 与 `webhook-github` 逐行被禁用；本插件因写 `^0.2.0-rc.2`（在 `includePrerelease` 下覆盖 `0.2.1-rc.2`，精确匹配则不覆盖）而通过。
+> **给插件作者的硬教训：peerDependencies 要写区间，不要写精确版本。** 宿主 0.2.1 一方包对 `@deepseek-ai/dsh-*` 的 peers 全部精确 pin 到同一版本（例：`@deepseek-ai/dsh-agent@0.2.1-rc.2` 的 dsh peers 全是 `0.2.1-rc.2`），插件照抄这种写法会在下一个 rc 上被闸门整片禁用。实证是本机 host 日志中的 `dsh: disabling profile plugin row "webhook-runtime"` 与 `dsh: disabling profile plugin row "webhook-github"` 记录：`@deepseek-ai/dsh-webhook@0.2.0-rc.2` 因 peers 写死 `"0.2.0-rc.2"`，在 dsh `0.2.1-rc.2` 下被逐行禁用，日志原文摘取 `Plugin @deepseek-ai/dsh-webhook@0.2.0-rc.2 is incompatible with dsh 0.2.1-rc.2: requirements {"@deepseek-ai/dsh-agent":"0.2.0-rc.2", "@deepseek-ai/dsh-invariants":"0.2.0-rc.2", …}`；本插件因写 `^0.2.0-rc.2`（在 `includePrerelease` 下覆盖 `0.2.1-rc.2`，精确匹配则不覆盖）而通过。
 
 peer 区间仍写成**逐代枚举**（`^0.1.1-rc.2 || … || ^0.2.0-rc.2`）而不是单条 `^0.2.0-rc.2`，是为了兼顾 node-semver 的默认比较方式（不带 `includePrerelease` 时不把预发布版算进别的代次的区间）：本机用宿主自带 semver 实测 `satisfies('0.2.1-rc.2', '^0.2.0-rc.2')` 为假、`satisfies('0.1.2-rc.1', '^0.1.1-rc.2')` 为假，而逐代枚举在两种比较方式下都成立，因此**上游每发布一个新的 rc 代次，这里要补一个枚举项**。
 
@@ -62,9 +64,9 @@ peer 区间仍写成**逐代枚举**（`^0.1.1-rc.2 || … || ^0.2.0-rc.2`）而
 |---|---|---|---|
 | `0.1.1-rc.2` | host 入口链接、真实启动（headless）过插件阶段、真实启动（web）client bundle HTTP 200 | ✅ | 2026-09-07 |
 | `0.1.2-rc.1` | host 入口链接、真实启动（headless）过插件阶段、真实启动（web）client bundle HTTP 200 | ✅ | 2026-09-07 |
-| `0.2.1-rc.2` | `npx tsc --noEmit` 干净；`npx vitest run` 67 条集成与单元测试全绿；宿主兼容性闸门（`evaluatePluginCompatibility`）判 PASS | ✅ | 2026-10-20 |
+| `0.2.1-rc.2` | `npx tsc --noEmit` 干净；`npx vitest run` 全部用例通过（unit + integration）；宿主兼容性闸门（`evaluatePluginCompatibility`）判 PASS | ✅ | 2026-10-20 |
 
-两行 0.1.x 是历史实测记录：当前的 `engines.dsh` 区间不再覆盖 `0.1.1-rc.2` 与 `0.1.2-rc.1`（用宿主自带 semver 求值为假），这两个版本现在会被闸门拒绝，本插件不再声称支持。`0.2.1-rc.2` 这一行**只记录构建、测试与闸门三项**，真实启动（headless / web）在 0.2.x 上尚未验证。
+两行 0.1.x 是历史实测记录：当前的 `engines.dsh` 区间不再覆盖 `0.1.1-rc.2` 与 `0.1.2-rc.1`（用宿主自带 semver 求值为假），这两个版本现在会被闸门拒绝，本插件不再声称支持。`0.2.1-rc.2` 这一行**只记录构建、测试与闸门三项**，真实启动（headless / web）在 0.2.x 上尚未验证。`peerDependencies` 的枚举里仍保留 `^0.1.1-rc.2` 与 `^0.1.2-rc.1` 两项，别把它读成功能承诺：声明了 `engines.dsh` 时 peers 整体不参与闸门判定，这两项的实际作用是让**安装期**解析得到满足。
 
 本插件设置命名空间写作 `'wakatime' as SettingsNamespace`（type-only 导入），不使用 `settingsNamespace()` helper —— 它在 `0.1.2` 已被删除，运行时导入会让整个模块链接失败；格式校验两代都由 `ctx.settings.register()` 内部完成。`lib/client.js` 实测零内核导入，与代次无关。
 

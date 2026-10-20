@@ -45,6 +45,8 @@ The plugin is a bridge between two systems: it runs **inside DSH** and speaks th
 
 The gate is the host's `evaluatePluginCompatibility` in `@deepseek-ai/dsh-app-boot/lib/index.js` (line 311): it reads the plugin's `package.json` only, without loading plugin code.
 
+The line numbers below refer to the published `@deepseek-ai/dsh@0.2.1-rc.2` artifacts and are locators only; verify against the symbol names (`evaluatePluginCompatibility` / `validateVolatilePlacement` / the slot-contract entry `plugins.bundle.config`).
+
 | Condition | Host behavior | Code location |
 |---|---|---|
 | `engines.dsh` present | **Only that one range is compared**, `peerDependencies` are ignored | `dsh-app-boot/lib/index.js:281-284` |
@@ -52,7 +54,7 @@ The gate is the host's `evaluatePluginCompatibility` in `@deepseek-ai/dsh-app-bo
 | Range comparison | `semver.satisfies(runningVersion, range, { includePrerelease: true })`, so prereleases participate | `dsh-app-boot/lib/index.js:277` |
 | Requirement unmet | stderr prints `dsh: disabling profile plugin row "<row>": Plugin <name>@<version> is incompatible with dsh <ver>: requirements …` and the row is disabled; the message names `dsh plugin allow-version` for an exact-version exemption | `dsh-app-boot/lib/index.js:2308` and `:335` |
 
-> **Hard lesson for plugin authors: write peerDependencies as ranges, never as exact versions.** The host's own 0.2.1 packages pin every `@deepseek-ai/dsh-*` peer to one exact version (e.g. all dsh peers of `@deepseek-ai/dsh-agent@0.2.1-rc.2` are `0.2.1-rc.2`), and a plugin that copies that style gets disabled generation by generation. Measured evidence, this machine's `~/.dsh/dsh-web.log:9338`: `@deepseek-ai/dsh-webhook@0.2.0-rc.2` pins its peers to `"0.2.0-rc.2"`, so on dsh `0.2.1-rc.2` the `webhook-runtime` and `webhook-github` rows are each disabled; this plugin passes because it declares `^0.2.0-rc.2`, which covers `0.2.1-rc.2` under `includePrerelease` while an exact match does not.
+> **Hard lesson for plugin authors: write peerDependencies as ranges, never as exact versions.** The host's own 0.2.1 packages pin every `@deepseek-ai/dsh-*` peer to one exact version (e.g. all dsh peers of `@deepseek-ai/dsh-agent@0.2.1-rc.2` are `0.2.1-rc.2`), and a plugin that copies that style gets disabled generation by generation. The evidence is the `dsh: disabling profile plugin row "webhook-runtime"` and `dsh: disabling profile plugin row "webhook-github"` records in this machine's host log: `@deepseek-ai/dsh-webhook@0.2.0-rc.2` pins its peers to `"0.2.0-rc.2"`, so on dsh `0.2.1-rc.2` each row is disabled, with the log reading `Plugin @deepseek-ai/dsh-webhook@0.2.0-rc.2 is incompatible with dsh 0.2.1-rc.2: requirements {"@deepseek-ai/dsh-agent":"0.2.0-rc.2", "@deepseek-ai/dsh-invariants":"0.2.0-rc.2", …}`; this plugin passes because it declares `^0.2.0-rc.2`, which covers `0.2.1-rc.2` under `includePrerelease` while an exact match does not.
 
 Peer ranges are still written as an **explicit generation list** (`^0.1.1-rc.2 || … || ^0.2.0-rc.2`) rather than a single `^0.2.0-rc.2` to cover the other comparison mode of node-semver, which excludes prereleases when `includePrerelease` is not set. Measured with the semver the host ships: `satisfies('0.2.1-rc.2', '^0.2.0-rc.2')` is false and `satisfies('0.1.2-rc.1', '^0.1.1-rc.2')` is false, while an explicit generation list holds under both comparison modes. **Add another entry whenever upstream ships a new rc generation.**
 
@@ -62,9 +64,9 @@ Peer ranges are still written as an **explicit generation list** (`^0.1.1-rc.2 |
 |---|---|---|---|
 | `0.1.1-rc.2` | host entry link, real boot (headless) past the plugin stage, real boot (web) client bundle HTTP 200 | ✅ | 2026-09-07 |
 | `0.1.2-rc.1` | host entry link, real boot (headless) past the plugin stage, real boot (web) client bundle HTTP 200 | ✅ | 2026-09-07 |
-| `0.2.1-rc.2` | `npx tsc --noEmit` clean; `npx vitest run` green across 67 integration and unit tests; host compatibility gate (`evaluatePluginCompatibility`) PASS | ✅ | 2026-10-20 |
+| `0.2.1-rc.2` | `npx tsc --noEmit` clean; `npx vitest run` passing every test (unit + integration); host compatibility gate (`evaluatePluginCompatibility`) PASS | ✅ | 2026-10-20 |
 
-The two 0.1.x rows are historical measurements: the current `engines.dsh` range no longer covers `0.1.1-rc.2` or `0.1.2-rc.1` (both evaluate to false with the semver the host ships), so those two versions are now rejected by the gate and this plugin no longer claims support for them. The `0.2.1-rc.2` row records build, tests, and the gate only; real boot (headless / web) has not been verified on 0.2.x.
+The two 0.1.x rows are historical measurements: the current `engines.dsh` range no longer covers `0.1.1-rc.2` or `0.1.2-rc.1` (both evaluate to false with the semver the host ships), so those two versions are now rejected by the gate and this plugin no longer claims support for them. The `0.2.1-rc.2` row records build, tests, and the gate only; real boot (headless / web) has not been verified on 0.2.x. The `^0.1.1-rc.2` and `^0.1.2-rc.1` entries stay in the `peerDependencies` list, but they are not a support claim: once `engines.dsh` is declared, peers do not participate in the gate at all, and those two entries only keep install-time resolution satisfied.
 
 The settings namespace is written as `'wakatime' as SettingsNamespace` (type-only import) instead of calling the `settingsNamespace()` helper - removed in `0.1.2`, where importing it at runtime makes the whole module fail to link. Format validation happens inside `ctx.settings.register()` on both generations. `lib/client.js` was measured to have zero kernel imports, so it is generation-independent.
 
