@@ -85,6 +85,15 @@ export const SETTINGS_NAMESPACE_CANDIDATES: readonly string[] = ['dsh-wakatime',
 /**
  * 从镜像快照读取某 secret 字段是否已配置（线路全程脱敏，唯一可信源）。
  * @param ns - 命名空间，或按优先级排列的命名空间候选。
+ *
+ * 槽位按**单层路径**匹配（`path.length === 1 && path[0] === key`）。这对本插件是
+ * 充分的：宿主 `redactSecrets(schema, value)` 从 `walk(schema, value, [], secrets)`
+ * 起步、每下一层就 `[...path, key]`（dsh-settings/lib/index.js:22 与 :73-75），而本
+ * 插件的 `Config` 是扁平的、`api_key` 就在顶层（src/index.ts:36），故它的 path 恒为
+ * `['api_key']`。
+ * ⚠️ 约束（今天成立、改结构就悄悄坏）：若将来把 secret 字段挪进嵌套对象（例如
+ * `auth.api_key`，path 会变成 `['auth','api_key']`），这里会**静默失效**——徽章不亮、
+ * 保存判定恒报未落地，且不抛任何错。动 Config 结构时必须同步改成整段路径比较。
  */
 export function secretSlotSet(
   snapshot: MirrorSnapshotLike | undefined,
