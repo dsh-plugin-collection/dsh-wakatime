@@ -310,6 +310,8 @@ describe('Plugin wiring (apply)', () => {
       },
     };
     const settingsCtx = { settings };
+    /** ctx.effect 注册的 disposer：unload() 按相反顺序执行，贴近真实 fiber 卸载。 */
+    const effectDisposers: Array<() => void> = [];
     const raw = {
       registry: { values: () => [] },
       logger: { info: () => {}, warn: () => {}, error: () => {} },
@@ -319,7 +321,9 @@ describe('Plugin wiring (apply)', () => {
       on: (name: string, cb: (...args: any[]) => void) => {
         handlers.set(name, [...(handlers.get(name) ?? []), cb]);
       },
-      effect: (_fn: () => () => void) => {},
+      effect: (fn: () => () => void) => {
+        effectDisposers.push(fn());
+      },
     };
     const emit = (name: string, ...args: any[]) => {
       for (const h of handlers.get(name) ?? []) h(...args);
@@ -340,7 +344,15 @@ describe('Plugin wiring (apply)', () => {
     };
     /** 当前 describe 调用次数快照（用于断言事件是否触发了重读）。 */
     const describeCallCount = () => describeCalls;
-    return { ctx: raw as unknown as Context, emit, saveAndNotify, describeCallCount };
+    /**
+     * 模拟 fiber 卸载（插件热重载 / disable）：倒序执行 ctx.effect 的 disposer，
+     * 再注销本 ctx 的事件监听 —— 卸载后的旧 fiber 必须完全静音。
+     */
+    const unload = () => {
+      for (const dispose of effectDisposers.splice(0).reverse()) dispose();
+      handlers.clear();
+    };
+    return { ctx: raw as unknown as Context, emit, saveAndNotify, describeCallCount, unload };
   }
 
   /**
@@ -923,6 +935,83 @@ describe('Plugin wiring (apply)', () => {
       });
       expect(probe.created(90000)).toBe(0);
       expect(probe.live(60000, 90000)).toBe(0);
+    } finally {
+      probe.restore();
+    }
+  });
+
+  it('should not accumulate process signal listeners across repeated apply()', async () => {
+    // 回归背景：apply() 里的 process.on('SIGINT'/'SIGTERM') 从不移除，插件热重载 /
+    // disable 每来一次就多一对闭包 —— 退出时被 N 份旧 state 各冲刷一次，
+    // MaxListenersExceededWarning 只是它露出来的表象。
+    // 修复：signal 监听随 ctx.effect 注册、随 fiber 卸载 process.off。
+    // listenerCount 断言全用相对量：同文件其他用例的 fiber 从不 unload，基线本身
+    // 会随用例推进增长，所以先取快照再算增量。
+    const wiringConfig = {
+      api_key: 'test_key_12345',
+      api_url: server.getBaseUrl(),
+      heartbeat_interval_ms: 60000,
+      project_name: '', language: '',
+      include_tool_calls: true, include_user_messages: false, include_assistant_messages: false,
+      cache_heartbeats: true, cache_limit: 100, debug: false,
+    };
+    const probe = observeIntervals();
+    const before = {
+      sigint: process.listenerCount('SIGINT'),
+      sigterm: process.listenerCount('SIGTERM'),
+    };
+    try {
+      const first = makeFakeCtx();
+      apply(first.ctx as Context, wiringConfig as any);
+      expect(process.listenerCount('SIGINT')).toBe(before.sigint + 1);
+      expect(process.listenerCount('SIGTERM')).toBe(before.sigterm + 1);
+
+      const sessionA = { id: 'wiring-signal-reload-a', header: { cwd: process.cwd() } };
+      first.emit('agent/status', { agent: { session: sessionA }, status: 'running' });
+      expect(probe.live(60000)).toBe(1);
+
+      // 重载前半程：旧 fiber 卸载 → signal 监听与该 session 的定时器一起消失
+      first.unload();
+      expect(process.listenerCount('SIGINT')).toBe(before.sigint);
+      expect(process.listenerCount('SIGTERM')).toBe(before.sigterm);
+      expect(probe.live(60000)).toBe(0);
+
+      // 重载后半程：新 fiber 装载。增量回到 +1 而不是 +2 → 监听器不累积
+      const second = makeFakeCtx();
+      apply(second.ctx as Context, wiringConfig as any);
+      expect(process.listenerCount('SIGINT')).toBe(before.sigint + 1);
+      expect(process.listenerCount('SIGTERM')).toBe(before.sigterm + 1);
+
+      // 新 fiber 接管仍存活的 session（这正是保留根级监听的目的），且只有一份 state 在动作
+      second.emit('agent/status', { agent: { session: sessionA }, status: 'running' });
+      expect(probe.live(60000)).toBe(1);
+      second.emit('session/event', sessionA, {
+        type: 'tool/call',
+        data: { turn: 1, step: 1, callId: 'call-reload-a', name: 'read', arguments: JSON.stringify({ file_path: '/path/reload-a.ts' }) },
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      // 已卸载的旧 fiber 完全静音：既不追踪也不冲刷
+      first.emit('session/event', sessionA, {
+        type: 'tool/call',
+        data: { turn: 1, step: 2, callId: 'call-orphan', name: 'read', arguments: JSON.stringify({ file_path: '/path/reload-orphan.ts' }) },
+      });
+      first.emit('agent/status', { agent: { session: sessionA }, status: 'idle' });
+
+      second.emit('agent/status', { agent: { session: sessionA }, status: 'idle' });
+      for (let t = 0; t < 60 && server.getReceivedHeartbeats().length === 0; t++) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      // 再等一段，给「旧 fiber 若没静音」的迟到心跳留足到达时间
+      await new Promise((r) => setTimeout(r, 150));
+      // 恰好一条、且是新 fiber 那条；/path/reload-orphan.ts 一条都不该出现
+      expect(server.getReceivedHeartbeats().map((h: any) => h.entity))
+        .toEqual(['/path/reload-a.ts']);
+
+      second.unload();
+      expect(process.listenerCount('SIGINT')).toBe(before.sigint);
+      expect(process.listenerCount('SIGTERM')).toBe(before.sigterm);
+      expect(probe.live(60000)).toBe(0);
     } finally {
       probe.restore();
     }

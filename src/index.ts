@@ -345,17 +345,12 @@ export function apply(ctx: Context, config: Config): void {
   });
 
   /**
-   * 【为什么是根级监听，而不是 agent/created + agent.ctx.on(...)】
-   * 生命周期事件由宿主经 agent 的「融合 carrier」派发（@deepseek-ai/dsh-agent
-   * lib/index.js：`const fused = (payload) => ({ ...payload, agent })`），
-   * payload 一定带 agent；而 @deepseek-ai/dsh-scope 的 carrier filter 是
-   * `if (tag === void 0) return true` —— 插件 ctx 没有 scope tag，因此收得到
-   * 进程内【所有】agent 的事件。宿主一方插件同样用根级监听（dsh-compaction-basic、
-   * dsh-goal-round-driver、dsh-api-session-controller、dsh-sdk-jsonrpc-server）。
-   *
-   * agent/created 方案有真实缺陷：插件 fiber 启动【之前】就已存在的 agent 永远不会
-   * 再触发 agent/created，于是那些 agent 的 running/idle 边界无人接管、心跳定时器
-   * 根本不启动 —— 会话重启或热重载插件后，遥测会静默停摆且没有任何报错。
+   * 【为什么是根级监听】agent/status 由宿主的 agent 融合 carrier 派发（payload 必带
+   * agent），dsh-scope 的 filter 对「无 scope tag 的接收 ctx」一律放行，所以插件 ctx
+   * 收得到进程内所有 agent 的事件；宿主一方插件用的也是同一写法（0.2.1-rc.2 的源码
+   * 证据与一方插件位置见本分支 commit 正文，行号会随宿主版本漂移，不躺在注释里）。
+   * 换成 agent/created + agent.ctx.on 会漏掉「插件 fiber 启动前就存在的 agent」：
+   * 它们永不触发 created，running/idle 无人接管、心跳定时器根本不启动。
    */
   ctx.on('agent/status', ({ agent, status }: { agent: Agent; status: AgentStatus }) => {
     const session = agent.session;
@@ -369,25 +364,12 @@ export function apply(ctx: Context, config: Config): void {
   });
 
   /**
-   * agent/disposed：agent 已离开注册表（宿主在 driver 静默、scoped 注册回卷之后、
-   * session detach 之前发出，@mode emit），此后不会再有该 session 的 running 边界。
-   * 这里做资源回收，顺序要紧：
-   *   1. 停定时器 —— 定时器回调闭包持有 session 与 state，不停就永远停不下来；
-   *   2. 最后一次冲刷 pending 心跳 + 磁盘缓存。dispose 与最后一次 idle 可能相邻
-   *      到达，复用 flushPendingSafely：其「快照 → clearPending」之间没有 await，
-   *      两次冲刷不会重复上报也不会漏（缓存冲刷本身在 HeartbeatCache 里有串行链）；
-   *   3. 从 activeSessions 移除。states 是 WeakMap 不阻塞回收，但 activeSessions
-   *      是强引用 Set，此前只增不减（仅 ctx.effect 卸载时清空），长跑进程会把每个
-   *      历史 session 连其 header 一起永久持有。
-   *
-   * 冲刷必须在 delete 之前发起（flushPending 的同步前缀要先把 state 取到手）。
-   * 监听器内绝不 await：@mode emit + 宿主对 unhandledRejection 是 fail-loud，
-   * 后台失败一律由 *Safely 包装自行兜底。
-   *
-   * 允许「迟到事件重新登记」：若 dispose 之后仍有 session/event 到达，说明该
-   * session 在宿主侧还活着，此时 getOrCreateState 把它加回 activeSessions 是正确
-   * 行为。不能反过来用「已 dispose」黑名单挡事件 —— 同一 Session 实例可能承载
-   * 下一个 Agent（source: resume/clear/compact），黑名单会让它永久失去追踪。
+   * agent/disposed（@mode emit）：agent 已离开注册表，此后不再有该 session 的 running
+   * 边界。顺序要紧：停定时器（回调闭包持有 session/state）→ 最后一次冲刷 pending 与
+   * 磁盘缓存（复用 flushPendingSafely，与相邻的最后一次 idle 可重入安全）→ 从强引用
+   * Set activeSessions 移除（此前只增不减，长跑进程会永久持有每个历史 session）。
+   * 监听器内不 await，失败一律 *Safely 兜底（宿主对 unhandledRejection 是 fail-loud）。
+   * 不做 dispose 黑名单：同一 Session 实例可能承载下一个 Agent，屏蔽迟到事件会让它永久失去追踪。
    */
   ctx.on('agent/disposed', ({ agent }: { agent: Agent }) => {
     const session = agent.session;
@@ -397,19 +379,7 @@ export function apply(ctx: Context, config: Config): void {
     activeSessions.delete(session);
   });
 
-  // Graceful shutdown on fiber disposal
-  ctx.effect(() => () => {
-    for (const session of activeSessions) {
-      const state = states.get(session);
-      if (state?.timer) {
-        clearInterval(state.timer);
-        state.timer = null;
-      }
-      flushPendingSafely(session);
-    }
-  });
-
-  // Process exit signal handling for graceful shutdown
+  /** 退出前把每个会话的 pending 心跳与磁盘缓存都冲出去，再按原有语义 exit(0)。 */
   const gracefulShutdown = async () => {
     if (runtime.debug) {
       ctx.logger.info('dsh-wakatime: process exiting, flushing remaining heartbeats');
@@ -429,10 +399,32 @@ export function apply(ctx: Context, config: Config): void {
     }
   };
 
-  process.on('SIGINT', () => {
+  const handleExitSignal = (): void => {
     void gracefulShutdown().then(() => process.exit(0));
-  });
-  process.on('SIGTERM', () => {
-    void gracefulShutdown().then(() => process.exit(0));
+  };
+
+  /**
+   * fiber 卸载是本插件资源回收的唯一出口：先摘掉 signal 监听（handler 引用要留着，
+   * `process.off` 只在同一引用上生效），再停每个会话的定时器并做最后一次冲刷。
+   * signal 监听必须随 fiber 注册/注销：`apply()` 每执行一次就注册一对，热重载/HMR 下
+   * 旧 fiber 的闭包会累积（退出时被 N 份旧 state 各冲刷一次；MaxListenersExceededWarning
+   * 只是表象）。也不要改成「模块级只注册一次」的单例：第二次 apply() 的闭包会引用到
+   * 第一份 config/state，语义更糟。
+   */
+  ctx.effect(() => {
+    process.on('SIGINT', handleExitSignal);
+    process.on('SIGTERM', handleExitSignal);
+    return () => {
+      process.off('SIGINT', handleExitSignal);
+      process.off('SIGTERM', handleExitSignal);
+      for (const session of activeSessions) {
+        const state = states.get(session);
+        if (state?.timer) {
+          clearInterval(state.timer);
+          state.timer = null;
+        }
+        flushPendingSafely(session);
+      }
+    };
   });
 }
