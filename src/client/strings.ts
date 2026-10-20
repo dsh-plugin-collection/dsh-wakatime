@@ -40,7 +40,10 @@ const zh = {
   reset: '重置',
   configured: '已配置',
   notConfigured: '未配置',
-  readOnlyNote: '当前部署不可写（内存模式）',
+  // 原括注「（内存模式）」已删：0.2.1 起 dsh-client-ui-settings 移除了 memory 持久化
+  // 模式（ConfigFormSnapshot 不再有 mode 字段），这句现在是错的。不可写的真因是宿主
+  // 判定文档不可写（view.writable === false），与"内存"无关。
+  readOnlyNote: '当前部署不可写',
   saveFailed: '保存未落地，请检查后重试',
   discard: '放弃修改',
   save: '保存',
@@ -78,7 +81,7 @@ const en: { [K in keyof typeof zh]: string } = {
   reset: 'Reset',
   configured: 'Configured',
   notConfigured: 'Not configured',
-  readOnlyNote: 'Read-only on this deployment (in-memory mode)',
+  readOnlyNote: 'Read-only on this deployment',
   saveFailed: 'Save did not land; check and retry',
   discard: 'Discard changes',
   save: 'Save',
