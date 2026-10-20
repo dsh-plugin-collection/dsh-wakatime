@@ -6,32 +6,93 @@ import { HeartbeatCache } from '../src/cache.js';
 import { WakaTimeHeartbeat } from '../src/types.js';
 import { apply } from '../src/index.js';
 import type { Context } from '@deepseek-ai/cordis';
-import { rmSync, mkdirSync, appendFileSync } from 'node:fs';
+import { rmSync, mkdirSync, appendFileSync, mkdtempSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+/** 每个用例独立的缓存根目录，随用例结束销毁（见下方两个 describe 的 beforeEach）。 */
+let testCacheDir = '';
+
+/** 用例开始前的 $HOME：afterEach 里必须在删目录【之前】还原，否则盘上残留无处可去。 */
+let savedHome: string | undefined;
+
+/**
+ * 给本用例开一个全新的缓存根目录并把它挂成 $HOME。
+ *
+ * 为什么必须是「每用例一个」而不是整个文件共用常量目录：HeartbeatCache 把心跳写到
+ * `$HOME/.dsh/wakatime/heartbeat-cache.jsonl`（src/cache.ts），而插件侧对 pending /
+ * 磁盘缓存的冲刷是 fire-and-forget 的。前一个用例的迟到冲刷若在用例结束后仍跑着，
+ * 会把心跳重新写回缓存文件（flushPending 的 catch 分支 appendBatch，部分成功时
+ * 缓存 doFlush 也写回未发送的尾部）。共用目录时，下一个用例的
+ * `expect(await cache.count()).toBe(n)` 就会读到上一轮的残留而变成僵尸 flake。
+ * 每用例 mkdtemp 让这种残留落在一个没人再读的目录里，风险根本不存在。
+ *
+ * 顺序纪律（与 fiber unload、$HOME 还原的先后有关）：
+ *   1. beforeEach：保存 HOME → 建目录 → 指向新目录（apply() 在用例体内构造
+ *      HeartbeatCache，其构造函数里的 homedir() 此刻必须已经指向新目录）；
+ *   2. 用例体：创建 fiber（apply()）；
+ *   3. afterEach：先 unload fiber（冲刷仍能看到本用例的目录）→ 再还原 HOME →
+ *      最后删目录。删除必须排在还原之后，否则迟到冲刷会在旧 HOME 上重建目录树。
+ */
+function useIsolatedCacheDir(): void {
+  savedHome = process.env.HOME;
+  testCacheDir = mkdtempSync(join(tmpdir(), `${process.pid}-`));
+  process.env.HOME = testCacheDir;
+}
+
+/**
+ * 用例收尾：按「卸载 fiber → 还原 $HOME → 删目录」的相反顺序拆掉本用例的痕迹。
+ * 不接受任何参数：待卸载的 fiber 由 makeFakeCtx 自行登记，调用方无需再记一遍。
+ */
+function releaseIsolatedCacheDir(): void {
+  unloadTrackedFibers();
+  if (savedHome === undefined) delete process.env.HOME;
+  else process.env.HOME = savedHome;
+  rmSync(testCacheDir, { recursive: true, force: true });
+  testCacheDir = '';
+}
+
+/**
+ * 当前用例创建过、尚未卸载的 fiber。
+ *
+ * 用数组而非单个槽位：有的用例会在同一个 it 里先后建立多个 fake ctx
+ *（例如热重载用例 first/second）。每个用例 beginTest() 清空一次，
+ * makeFakeCtx 在建立时登记，afterEach 统一倒序卸载。
+ */
+const activeFibers: Array<{ unload: () => void }> = [];
+
+/** 用例开始时清空上一轮的登记（防御性：afterEach 已耗尽，这里只兜底断言失败等异常路径）。 */
+function beginTest(): void {
+  activeFibers.length = 0;
+}
+
+/** 倒序卸载所有登记过的 fiber：signal 监听、定时器、事件处理器都在这一步归还。 */
+function unloadTrackedFibers(): void {
+  for (const fiber of activeFibers.splice(0).reverse()) fiber.unload();
+}
+
 describe('Integration Tests', () => {
   let server: MockWakaTimeServer;
   let client: WakaTimeClient;
   let cache: HeartbeatCache;
-  const testCacheDir = join(tmpdir(), 'dsh-wakatime-int-test-' + Date.now());
 
   beforeEach(async () => {
+    beginTest();
+    useIsolatedCacheDir();
     server = new MockWakaTimeServer();
     const port = await server.start();
     client = new WakaTimeClient({
       api_key: 'test_key_12345',
       api_url: `http://127.0.0.1:${port}`,
     });
-    process.env.HOME = testCacheDir;
     cache = new HeartbeatCache({ cache_limit: 100 });
   });
 
   afterEach(async () => {
     await server.stop();
-    rmSync(testCacheDir, { recursive: true, force: true });
+    releaseIsolatedCacheDir();
   });
 
   describe('Full workflow', () => {
@@ -276,7 +337,6 @@ describe('Integration Tests', () => {
 
 describe('Plugin wiring (apply)', () => {
   let server: MockWakaTimeServer;
-  const testCacheDir = join(tmpdir(), 'dsh-wakatime-wiring-test-' + Date.now());
 
   /**
    * describe() 行的形状：ns + 已解析 value。
@@ -352,6 +412,14 @@ describe('Plugin wiring (apply)', () => {
       for (const dispose of effectDisposers.splice(0).reverse()) dispose();
       handlers.clear();
     };
+    // 登记本 fiber，让 afterEach 无需依赖用例自己记得 unload。
+    // 这不是「额外加的严格性」，而是补上测试本来漏掉的 fiber 生命周期：
+    // 漏卸载时每次 apply() 都会在 process 上留一对 signal 监听（插件侧
+    // 已改为随 ctx.effect 注册/注销，见 src/index.ts 的 ctx.effect），
+    // 用例一多就会撞上 MaxListenersExceededWarning —— 那是【测试夹具没拆】，
+    // 不是插件泄漏。多个 ctx 在同一用例内共存时，登记顺序即卸载的逆序。
+    const fiber = { unload };
+    activeFibers.push(fiber);
     return { ctx: raw as unknown as Context, emit, saveAndNotify, describeCallCount, unload };
   }
 
@@ -397,14 +465,15 @@ describe('Plugin wiring (apply)', () => {
   }
 
   beforeEach(async () => {
+    beginTest();
+    useIsolatedCacheDir();
     server = new MockWakaTimeServer();
     await server.start();
-    process.env.HOME = testCacheDir;
   });
 
   afterEach(async () => {
     await server.stop();
-    rmSync(testCacheDir, { recursive: true, force: true });
+    releaseIsolatedCacheDir();
   });
 
   it('should send heartbeats from tool/call events through apply() wiring', async () => {
@@ -945,8 +1014,12 @@ describe('Plugin wiring (apply)', () => {
     // disable 每来一次就多一对闭包 —— 退出时被 N 份旧 state 各冲刷一次，
     // MaxListenersExceededWarning 只是它露出来的表象。
     // 修复：signal 监听随 ctx.effect 注册、随 fiber 卸载 process.off。
-    // listenerCount 断言全用相对量：同文件其他用例的 fiber 从不 unload，基线本身
-    // 会随用例推进增长，所以先取快照再算增量。
+    // listenerCount 断言用相对量：不假设本用例见到的是进程里唯一的插件 fiber
+    //（单元测试文件、将来新增的用例都可能各有自己的 fiber），只断言本用例内
+    // apply() 恰好 +1、unload() 恰好回到快照 —— 这正是「监听器不累积」的充分条件。
+    // 注意快照的语义已随夹具修复而改变：afterEach 现在会卸载每个用例的 fiber，
+    // 所以 before 是【真正的进程基线】（不再上一用例一对），上面的 +1 / +0
+    // 断言因此比修复前更强，而不需要调整数值。
     const wiringConfig = {
       api_key: 'test_key_12345',
       api_url: server.getBaseUrl(),
