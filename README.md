@@ -35,7 +35,7 @@ The plugin is a bridge between two systems: it runs **inside DSH** and speaks th
 
 | Side | Compatibility |
 |---|---|
-| **DSH (DeepSeek Harness)** | Runs as a DSH plugin on the web profile; the supported range is decided by `engines.dsh` in `package.json`, written as `>=0.1.7-rc.2 <0.2.0-0 \|\| >=0.2.0-rc.2 <0.3.0-0` (gate rules below); peer deps are ranges: `@deepseek-ai/dsh-agent` / `@deepseek-ai/dsh-session` `^0.1.1-rc.2 \|\| ^0.1.2-rc.1 \|\| ^0.1.5-rc.1 \|\| ^0.1.7-rc.2 \|\| ^0.2.0-rc.2`, `@deepseek-ai/dsh-client-ui-primitives` `^0.1.7-rc.2 \|\| ^0.2.0-rc.2`, `@deepseek-ai/cordis` `^4.0.1`, `@deepseek-ai/schemastery` `^3.18.1`; Node >= 22.19 (including 24+); Windows / macOS / Linux |
+| **DSH (DeepSeek Harness)** | Runs as a DSH plugin on the web profile; the supported range is decided by `engines.dsh` in `package.json`, written as `>=0.1.7-rc.2 <0.2.0-0 \|\| >=0.2.0-rc.2 <0.3.0-0` (gate rules below); peer deps are ranges: `@deepseek-ai/dsh-agent` / `@deepseek-ai/dsh-session` `^0.1.1-rc.2 \|\| ^0.1.2-rc.1 \|\| ^0.1.5-rc.1 \|\| ^0.1.7-rc.2 \|\| ^0.2.0-rc.2 \|\| ^0.2.1-rc.2`, `@deepseek-ai/dsh-client-ui-primitives` `^0.1.7-rc.2 \|\| ^0.2.0-rc.2 \|\| ^0.2.1-rc.2`, `@deepseek-ai/cordis` `^4.0.1`, `@deepseek-ai/schemastery` `^3.18.1`; Node >= 22.19 (including 24+); Windows / macOS / Linux |
 | **WakaTime cloud** | Works with wakatime.com out of the box (Heartbeat API v1) |
 | **Self-hosted WakaTime** | Supported via the **API URL** setting — any WakaTime-compatible server |
 | **WakaTime ecosystem** | Reads the standard `~/.wakatime.cfg`, so an existing API key is picked up automatically |
@@ -56,7 +56,19 @@ The line numbers below refer to the published `@deepseek-ai/dsh@0.2.1-rc.2` arti
 
 > **Hard lesson for plugin authors: write peerDependencies as ranges, never as exact versions.** The host's own 0.2.1 packages pin every `@deepseek-ai/dsh-*` peer to one exact version (e.g. all dsh peers of `@deepseek-ai/dsh-agent@0.2.1-rc.2` are `0.2.1-rc.2`), and a plugin that copies that style gets disabled generation by generation. The evidence is the `dsh: disabling profile plugin row "webhook-runtime"` and `dsh: disabling profile plugin row "webhook-github"` records in this machine's host log: `@deepseek-ai/dsh-webhook@0.2.0-rc.2` pins its peers to `"0.2.0-rc.2"`, so on dsh `0.2.1-rc.2` each row is disabled, with the log reading `Plugin @deepseek-ai/dsh-webhook@0.2.0-rc.2 is incompatible with dsh 0.2.1-rc.2: requirements {"@deepseek-ai/dsh-agent":"0.2.0-rc.2", "@deepseek-ai/dsh-invariants":"0.2.0-rc.2", …}`; this plugin passes because it declares `^0.2.0-rc.2`, which covers `0.2.1-rc.2` under `includePrerelease` while an exact match does not.
 
-Peer ranges are still written as an **explicit generation list** (`^0.1.1-rc.2 || … || ^0.2.0-rc.2`) rather than a single `^0.2.0-rc.2` to cover the other comparison mode of node-semver, which excludes prereleases when `includePrerelease` is not set. Measured with the semver the host ships: `satisfies('0.2.1-rc.2', '^0.2.0-rc.2')` is false and `satisfies('0.1.2-rc.1', '^0.1.1-rc.2')` is false, while an explicit generation list holds under both comparison modes. **Add another entry whenever upstream ships a new rc generation.**
+Peer ranges are written as an **explicit generation list** (`^0.1.1-rc.2 || … || ^0.2.1-rc.2`) rather than a single range to cover node-semver's default comparison mode: without `includePrerelease`, a prerelease version needs a comparator carrying the same `[major.minor.patch]` tuple. `^0.2.1-rc.2` expands to `>=0.2.1-rc.2 <0.3.0-0`, whose only anchor tuples are `0.2.1` and `0.3.0`, so with the semver the host ships and default semantics `satisfies('0.2.1-rc.2', '^0.2.1-rc.2')` is true, `satisfies('0.2.1', '^0.2.1-rc.2')` is true, and `satisfies('0.2.2-rc.1', '^0.2.1-rc.2')` is false.
+
+Upstream's `0.2.1-rc.2` release has been added to the list per this rule. It is a **standing action**: one added entry covers that generation's rc plus that generation's stable release, the next rc generation needs another entry, and no single range can cover future prerelease generations in advance.
+
+The exposure is npm only. Installing from a tarball produced by `npm pack` (a `file:` reference to a directory is installed as a link and skips `peerDependencies`, so it measures nothing): against host `0.2.1-rc.2`, `npm install` fails with `ERESOLVE` (exit 1) while the list lacks the entry and exits 0 once `^0.2.1-rc.2` is added; `pnpm install` exits 0 either way and `pnpm peers check` reports `No peer dependency issues found`, because pnpm intersects ranges instead of using default satisfies.
+
+Self-check (read-only evaluation, writes nothing; requires dsh installed, i.e. `command -v dsh` returns a path):
+
+```bash
+node -e 'const p=require("path"),{createRequire}=require("module");const s=createRequire(p.dirname(require.resolve("@deepseek-ai/dsh-app-boot",{paths:[process.argv[1]]})))("semver");const v="0.2.1-rc.2",r="^0.2.0-rc.2";console.log("gate includePrerelease:",s.satisfies(v,r,{includePrerelease:true}),"/ default semantics:",s.satisfies(v,r))' "$(command -v dsh)"
+```
+
+The output `gate includePrerelease: true / default semantics: false` shows one version against one range evaluating true under the gate's comparison (with `includePrerelease`) and false under node-semver defaults.
 
 ### Kernel generation verification (checked 2026-10-20)
 
@@ -223,7 +235,8 @@ src/
 
 | Item | Note |
 |---|---|
-| Install with pnpm | The repo is driven by `pnpm-lock.yaml` + `pnpm-workspace.yaml`. The root `package-lock.json` is stale (verified contents: cordis 4.0.1, dsh-agent 0.1.1-rc.2, schemastery 3.18.1, plus the discontinued `@deepseek-ai/dsh-invariants` 0.1.1-rc.2), so installing with npm builds a tree that does not match the 0.2.1-rc.2 host this plugin is verified against |
+| pnpm is the only package manager | The repo ships `pnpm-lock.yaml` (with `pnpm-workspace.yaml`) and has no `package-lock.json`; install and refresh the lock with pnpm |
+| Development dependencies are exact pins | devDependencies pin `@deepseek-ai/dsh-agent` / `@deepseek-ai/dsh-session` / `@deepseek-ai/dsh-settings` / `@deepseek-ai/dsh-client-ui-primitives` all to `0.2.1-rc.2` (`@deepseek-ai/cordis` `^4.0.5` and `@deepseek-ai/schemastery` `^3.18.5` stay ranges). These are development-time values, not the published contract: the runtime gate reads `engines.dsh` only, and the outward contract is the peer list above. `@deepseek-ai/dsh-client-ui-primitives` is an explicit devDependency for development resolution only and must still stay external in the bundle (see the table above) |
 | Host packages pin their own peers | From 0.2.1 every host package pins its `@deepseek-ai/dsh-*` peers to one exact version (`@deepseek-ai/cordis` stays a `~4.0.5` range). That is internal to the host monorepo; plugins must not copy it, see "write peerDependencies as ranges" above |
 | `@deepseek-ai/dsh-invariants` is discontinued | Last published version is `0.2.0-rc.2` and the 0.2.1-rc.2 host package set has no such package; drop it from devDependencies after an upgrade if it lingers |
 | 0.2.1 removes the memory persistence mode of the settings client | `ConfigFormSnapshot` no longer has `mode: 'host' \| 'memory'`; `SettingsMirrorSnapshot.status` on the describe mirror no longer has `'unavailable'`, leaving `'idle' \| 'loading' \| 'ready'`; `ConfigFormController` takes one less persistence parameter (now `ctx, spec, mirror, schema`). Sources: host `dsh-client-ui-settings/lib/types/client/config-form-types.d.ts:6-29`, `settings-mirror.d.ts:21-31`, `config-form.d.ts:49`. Plugin code must not read `snapshot.mode` |

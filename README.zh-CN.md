@@ -35,7 +35,7 @@ DeepSeek Harness（DSH）的 WakaTime 心跳上报插件。
 
 | 端 | 兼容性 |
 |---|---|
-| **DSH（DeepSeek Harness）** | 以 DSH 插件形式运行于 web profile；支持区间由 `package.json` 的 `engines.dsh` 决定，写作 `>=0.1.7-rc.2 <0.2.0-0 \|\| >=0.2.0-rc.2 <0.3.0-0`（闸门规则见下）；peer 依赖写区间：`@deepseek-ai/dsh-agent` / `@deepseek-ai/dsh-session` `^0.1.1-rc.2 \|\| ^0.1.2-rc.1 \|\| ^0.1.5-rc.1 \|\| ^0.1.7-rc.2 \|\| ^0.2.0-rc.2`，`@deepseek-ai/dsh-client-ui-primitives` `^0.1.7-rc.2 \|\| ^0.2.0-rc.2`，`@deepseek-ai/cordis` `^4.0.1`，`@deepseek-ai/schemastery` `^3.18.1`；Node ≥ 22.19（含 24+）；Windows / macOS / Linux 全支持 |
+| **DSH（DeepSeek Harness）** | 以 DSH 插件形式运行于 web profile；支持区间由 `package.json` 的 `engines.dsh` 决定，写作 `>=0.1.7-rc.2 <0.2.0-0 \|\| >=0.2.0-rc.2 <0.3.0-0`（闸门规则见下）；peer 依赖写区间：`@deepseek-ai/dsh-agent` / `@deepseek-ai/dsh-session` `^0.1.1-rc.2 \|\| ^0.1.2-rc.1 \|\| ^0.1.5-rc.1 \|\| ^0.1.7-rc.2 \|\| ^0.2.0-rc.2 \|\| ^0.2.1-rc.2`，`@deepseek-ai/dsh-client-ui-primitives` `^0.1.7-rc.2 \|\| ^0.2.0-rc.2 \|\| ^0.2.1-rc.2`，`@deepseek-ai/cordis` `^4.0.1`，`@deepseek-ai/schemastery` `^3.18.1`；Node ≥ 22.19（含 24+）；Windows / macOS / Linux 全支持 |
 | **WakaTime 云端** | 开箱即用对接 wakatime.com（心跳 API v1） |
 | **自托管 WakaTime** | 通过 **API URL** 设置支持任意 WakaTime 兼容服务端 |
 | **WakaTime 生态** | 自动读取标准 `~/.wakatime.cfg`，已有 API Key 无需重复配置 |
@@ -56,7 +56,19 @@ DeepSeek Harness（DSH）的 WakaTime 心跳上报插件。
 
 > **给插件作者的硬教训：peerDependencies 要写区间，不要写精确版本。** 宿主 0.2.1 一方包对 `@deepseek-ai/dsh-*` 的 peers 全部精确 pin 到同一版本（例：`@deepseek-ai/dsh-agent@0.2.1-rc.2` 的 dsh peers 全是 `0.2.1-rc.2`），插件照抄这种写法会在下一个 rc 上被闸门整片禁用。实证是本机 host 日志中的 `dsh: disabling profile plugin row "webhook-runtime"` 与 `dsh: disabling profile plugin row "webhook-github"` 记录：`@deepseek-ai/dsh-webhook@0.2.0-rc.2` 因 peers 写死 `"0.2.0-rc.2"`，在 dsh `0.2.1-rc.2` 下被逐行禁用，日志原文摘取 `Plugin @deepseek-ai/dsh-webhook@0.2.0-rc.2 is incompatible with dsh 0.2.1-rc.2: requirements {"@deepseek-ai/dsh-agent":"0.2.0-rc.2", "@deepseek-ai/dsh-invariants":"0.2.0-rc.2", …}`；本插件因写 `^0.2.0-rc.2`（在 `includePrerelease` 下覆盖 `0.2.1-rc.2`，精确匹配则不覆盖）而通过。
 
-peer 区间仍写成**逐代枚举**（`^0.1.1-rc.2 || … || ^0.2.0-rc.2`）而不是单条 `^0.2.0-rc.2`，是为了兼顾 node-semver 的默认比较方式（不带 `includePrerelease` 时不把预发布版算进别的代次的区间）：本机用宿主自带 semver 实测 `satisfies('0.2.1-rc.2', '^0.2.0-rc.2')` 为假、`satisfies('0.1.2-rc.1', '^0.1.1-rc.2')` 为假，而逐代枚举在两种比较方式下都成立，因此**上游每发布一个新的 rc 代次，这里要补一个枚举项**。
+peer 区间写成**逐代枚举**（`^0.1.1-rc.2 || … || ^0.2.1-rc.2`）而不是单条区间，是为了兼顾 node-semver 的默认比较方式：不带 `includePrerelease` 时，带预发布的版本要求比较器里存在同一 `[major.minor.patch]` 元组的锚点。`^0.2.1-rc.2` 展开为 `>=0.2.1-rc.2 <0.3.0-0`，锚点元组只有 `0.2.1` 与 `0.3.0`，因此用宿主自带 semver 在默认语义下实测：`satisfies('0.2.1-rc.2', '^0.2.1-rc.2')` 为真、`satisfies('0.2.1', '^0.2.1-rc.2')` 为真、`satisfies('0.2.2-rc.1', '^0.2.1-rc.2')` 为假。
+
+本次上游发布 `0.2.1-rc.2` 后，已按该规约在枚举中补入 `^0.2.1-rc.2`。这是**持续动作**：补一项只吃得住「该代 rc + 该代稳定版」，下一个 rc 代次仍需再补一项，任何单条区间都无法一次性向前覆盖未来的预发布代次。
+
+影响面限于 npm。用 `npm pack` 产出的 tarball 安装（`file:` 指向目录时 npm 按 link 安装并跳过 `peerDependencies`，测不出结果）：在宿主 `0.2.1-rc.2` 下，枚举未补项时 `npm install` 以 `ERESOLVE` 失败（退出码 1），补入 `^0.2.1-rc.2` 后退出码 0；`pnpm install` 两种写法都是退出码 0，`pnpm peers check` 报 `No peer dependency issues found`，因为 pnpm 按范围交集判定而不走默认 satisfies。
+
+自检（只读求值，不写入任何状态；需已安装 dsh，即 `command -v dsh` 有值）：
+
+```bash
+node -e 'const p=require("path"),{createRequire}=require("module");const s=createRequire(p.dirname(require.resolve("@deepseek-ai/dsh-app-boot",{paths:[process.argv[1]]})))("semver");const v="0.2.1-rc.2",r="^0.2.0-rc.2";console.log("gate includePrerelease:",s.satisfies(v,r,{includePrerelease:true}),"/ default semantics:",s.satisfies(v,r))' "$(command -v dsh)"
+```
+
+输出 `gate includePrerelease: true / default semantics: false`：同一个版本对同一个区间，在闸门比较方式（带 `includePrerelease`）下成立、在 node-semver 默认语义下不成立。
 
 ### 内核代次验证（2026-10-20 复核）
 
@@ -223,7 +235,8 @@ src/
 
 | 事项 | 说明 |
 |---|---|
-| 安装用 pnpm | 仓库以 `pnpm-lock.yaml` + `pnpm-workspace.yaml` 为准。根目录的 `package-lock.json` 已陈旧（实测锁的是 cordis 4.0.1 / dsh-agent 0.1.1-rc.2 / schemastery 3.18.1，还带着已停更的 `@deepseek-ai/dsh-invariants` 0.1.1-rc.2），用它装出来的依赖树与宿主 0.2.1-rc.2 不同源，开发期不要走 npm |
+| 包管理器只有 pnpm | 仓库只认 `pnpm-lock.yaml`（配套 `pnpm-workspace.yaml`），没有 `package-lock.json`；安装与锁文件更新一律走 pnpm |
+| 开发期依赖精确钉版 | devDependencies 把 `@deepseek-ai/dsh-agent` / `@deepseek-ai/dsh-session` / `@deepseek-ai/dsh-settings` / `@deepseek-ai/dsh-client-ui-primitives` 全部钉到 `0.2.1-rc.2`（`@deepseek-ai/cordis` `^4.0.5`、`@deepseek-ai/schemastery` `^3.18.5` 仍为区间）。这只是开发期取值，不构成对外契约：运行时闸门只看 `engines.dsh`，对外区间是上面的 peer 列表。`@deepseek-ai/dsh-client-ui-primitives` 列为显式 devDependency 只为开发期解析，打包时仍必须保持 external（见上表） |
 | 宿主一方包 peers 精确 pin | 0.2.1 起宿主各包对 `@deepseek-ai/dsh-*` 的 peers 全部精确 pin 到同一版本（`@deepseek-ai/cordis` 仍是 `~4.0.5` 区间）。这是宿主 monorepo 内部的做法，插件不要照抄，见上方「peers 要写区间」 |
 | `@deepseek-ai/dsh-invariants` 已停更 | registry 末版为 `0.2.0-rc.2`，0.2.1-rc.2 的宿主包集合里没有这个包；devDependencies 里若残留它，升级后应移除 |
 | 0.2.1 移除设置客户端的 memory 持久化模式 | `ConfigFormSnapshot` 不再有 `mode: 'host' \| 'memory'`；describe mirror 的 `SettingsMirrorSnapshot.status` 不再有 `'unavailable'`，只剩 `'idle' \| 'loading' \| 'ready'`；`ConfigFormController` 构造函数少一个 persistence 参数（现为 `ctx, spec, mirror, schema`）。依据：宿主 `dsh-client-ui-settings/lib/types/client/config-form-types.d.ts:6-29`、`settings-mirror.d.ts:21-31`、`config-form.d.ts:49`。插件代码不得读取 `snapshot.mode` |
