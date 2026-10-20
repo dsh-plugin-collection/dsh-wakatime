@@ -291,6 +291,9 @@ export function apply(ctx: Context, config: Config): void {
 
   const startHeartbeatTimer = (session: Session): void => {
     const state = getOrCreateState(session);
+    // 幂等：running 可能在一次会话里重复到达（唤醒输入、重试、宿主补发）。
+    // state.timer 非空即返回，绝不为同一 session 叠第二个 setInterval，
+    // 否则每个重复边都会多一条独立的冲刷节拍并永久留在 activeSessions 里。
     if (state.timer) return;
     state.timer = setInterval(() => {
       flushPendingSafely(session);
@@ -341,6 +344,14 @@ export function apply(ctx: Context, config: Config): void {
     getOrCreateState(session).tracker.trackAssistantMessage(event as any);
   });
 
+  /**
+   * 【为什么是根级监听】agent/status 由宿主的 agent 融合 carrier 派发（payload 必带
+   * agent），dsh-scope 的 filter 对「无 scope tag 的接收 ctx」一律放行，所以插件 ctx
+   * 收得到进程内所有 agent 的事件；宿主一方插件用的也是同一写法（0.2.1-rc.2 的源码
+   * 证据与一方插件位置见本分支 commit 正文，行号会随宿主版本漂移，不躺在注释里）。
+   * 换成 agent/created + agent.ctx.on 会漏掉「插件 fiber 启动前就存在的 agent」：
+   * 它们永不触发 created，running/idle 无人接管、心跳定时器根本不启动。
+   */
   ctx.on('agent/status', ({ agent, status }: { agent: Agent; status: AgentStatus }) => {
     const session = agent.session;
     if (status === 'running') {
@@ -352,19 +363,23 @@ export function apply(ctx: Context, config: Config): void {
     }
   });
 
-  // Graceful shutdown on fiber disposal
-  ctx.effect(() => () => {
-    for (const session of activeSessions) {
-      const state = states.get(session);
-      if (state?.timer) {
-        clearInterval(state.timer);
-        state.timer = null;
-      }
-      flushPendingSafely(session);
-    }
+  /**
+   * agent/disposed（@mode emit）：agent 已离开注册表，此后不再有该 session 的 running
+   * 边界。顺序要紧：停定时器（回调闭包持有 session/state）→ 最后一次冲刷 pending 与
+   * 磁盘缓存（复用 flushPendingSafely，与相邻的最后一次 idle 可重入安全）→ 从强引用
+   * Set activeSessions 移除（此前只增不减，长跑进程会永久持有每个历史 session）。
+   * 监听器内不 await，失败一律 *Safely 兜底（宿主对 unhandledRejection 是 fail-loud）。
+   * 不做 dispose 黑名单：同一 Session 实例可能承载下一个 Agent，屏蔽迟到事件会让它永久失去追踪。
+   */
+  ctx.on('agent/disposed', ({ agent }: { agent: Agent }) => {
+    const session = agent.session;
+    stopHeartbeatTimer(session);
+    flushPendingSafely(session);
+    flushCacheSafely();
+    activeSessions.delete(session);
   });
 
-  // Process exit signal handling for graceful shutdown
+  /** 退出前把每个会话的 pending 心跳与磁盘缓存都冲出去，再按原有语义 exit(0)。 */
   const gracefulShutdown = async () => {
     if (runtime.debug) {
       ctx.logger.info('dsh-wakatime: process exiting, flushing remaining heartbeats');
@@ -384,10 +399,32 @@ export function apply(ctx: Context, config: Config): void {
     }
   };
 
-  process.on('SIGINT', () => {
+  const handleExitSignal = (): void => {
     void gracefulShutdown().then(() => process.exit(0));
-  });
-  process.on('SIGTERM', () => {
-    void gracefulShutdown().then(() => process.exit(0));
+  };
+
+  /**
+   * fiber 卸载是本插件资源回收的唯一出口：先摘掉 signal 监听（handler 引用要留着，
+   * `process.off` 只在同一引用上生效），再停每个会话的定时器并做最后一次冲刷。
+   * signal 监听必须随 fiber 注册/注销：`apply()` 每执行一次就注册一对，热重载/HMR 下
+   * 旧 fiber 的闭包会累积（退出时被 N 份旧 state 各冲刷一次；MaxListenersExceededWarning
+   * 只是表象）。也不要改成「模块级只注册一次」的单例：第二次 apply() 的闭包会引用到
+   * 第一份 config/state，语义更糟。
+   */
+  ctx.effect(() => {
+    process.on('SIGINT', handleExitSignal);
+    process.on('SIGTERM', handleExitSignal);
+    return () => {
+      process.off('SIGINT', handleExitSignal);
+      process.off('SIGTERM', handleExitSignal);
+      for (const session of activeSessions) {
+        const state = states.get(session);
+        if (state?.timer) {
+          clearInterval(state.timer);
+          state.timer = null;
+        }
+        flushPendingSafely(session);
+      }
+    };
   });
 }
