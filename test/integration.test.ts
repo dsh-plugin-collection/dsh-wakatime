@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { MockWakaTimeServer } from './mock-server.js';
 import { WakaTimeClient } from '../src/wakatime.js';
 import { FileTracker } from '../src/tracker.js';
@@ -324,6 +324,9 @@ describe('Plugin wiring (apply)', () => {
     const emit = (name: string, ...args: any[]) => {
       for (const h of handlers.get(name) ?? []) h(...args);
     };
+    // 生命周期事件与 session/event 走同一个 emit：宿主把 agent 融合进 payload，
+    // 因此测试直接 emit('agent/status', { agent: { session }, status }) /
+    // emit('agent/disposed', { agent: { session } }) 即可，无需额外通道。
     /**
      * 模拟 WebUI 保存：更新【该 ns 的】文档行，再发 settings/document-updated。
      *
@@ -338,6 +341,47 @@ describe('Plugin wiring (apply)', () => {
     /** 当前 describe 调用次数快照（用于断言事件是否触发了重读）。 */
     const describeCallCount = () => describeCalls;
     return { ctx: raw as unknown as Context, emit, saveAndNotify, describeCallCount };
+  }
+
+  /**
+   * 定时器探针：透传全局 setInterval/clearInterval，并登记每次创建/清除的 delay。
+   * 插件的心跳间隔是测试自己指定的（60000 / 90000），所以按 delay 计数就只统计
+   * 插件自己的定时器，vitest 与 undici 等库的 interval 不会混进来。
+   */
+  function observeIntervals() {
+    const set = globalThis.setInterval;
+    const clear = globalThis.clearInterval;
+    /** id → delay：当前存活的 interval。 */
+    const live = new Map<unknown, number>();
+    const createdDelays: number[] = [];
+    const clearedDelays: number[] = [];
+    vi.spyOn(globalThis, 'setInterval').mockImplementation(((fn: any, ms?: any, ...rest: any[]) => {
+      const id = set(fn, ms, ...rest);
+      if (typeof ms === 'number') {
+        live.set(id, ms);
+        createdDelays.push(ms);
+      }
+      return id;
+    }) as any);
+    vi.spyOn(globalThis, 'clearInterval').mockImplementation(((id: any) => {
+      const delay = live.get(id);
+      if (delay !== undefined) {
+        live.delete(id);
+        clearedDelays.push(delay);
+      }
+      return clear(id);
+    }) as any);
+    const count = (delays: number[], ...wanted: number[]) =>
+      delays.filter((d) => wanted.length === 0 || wanted.includes(d)).length;
+    return {
+      /** 存活的插件定时器数量（可按 delay 过滤）。 */
+      live: (...wanted: number[]) => count([...live.values()], ...wanted),
+      /** 累计创建的插件定时器数量（可按 delay 过滤）。 */
+      created: (...wanted: number[]) => count(createdDelays, ...wanted),
+      /** 累计清除的插件定时器数量（可按 delay 过滤）。 */
+      cleared: (...wanted: number[]) => count(clearedDelays, ...wanted),
+      restore: () => vi.restoreAllMocks(),
+    };
   }
 
   beforeEach(async () => {
@@ -756,6 +800,131 @@ describe('Plugin wiring (apply)', () => {
       expect(seenAuth[0]).toBe(`Basic ${Buffer.from('test_key_12345:').toString('base64')}`);
     } finally {
       await new Promise<void>((r) => keyServer.close(() => r()));
+    }
+  });
+
+  it('should start/stop exactly one heartbeat timer per session on root agent/status', async () => {
+    // 用例 A：根级 agent/status 是本插件唯一的生命周期接线。
+    // running 起定时器、idle 停定时器并在停止边界冲刷 pending；
+    // 重复 running 必须幂等（不叠第二个 setInterval），重复 idle 也不重复 clearInterval。
+    // 间隔设为 60000ms：整个用例期间 interval 一次都不会真的触发，
+    // 所以「心跳到达」只能来自停止边界的冲刷。
+    const probe = observeIntervals();
+    try {
+      const { ctx, emit } = makeFakeCtx();
+      const session = { id: 'wiring-lifecycle-timer', header: { cwd: process.cwd() } };
+
+      apply(ctx as Context, {
+        api_key: 'test_key_12345',
+        api_url: server.getBaseUrl(),
+        heartbeat_interval_ms: 60000,
+        project_name: '', language: '',
+        include_tool_calls: true, include_user_messages: false, include_assistant_messages: false,
+        cache_heartbeats: true, cache_limit: 100, debug: false,
+      } as any);
+
+      emit('agent/status', { agent: { session }, status: 'running' });
+      expect(probe.created(60000)).toBe(1);
+      expect(probe.live(60000)).toBe(1);
+
+      // 同一 session 连续两次 running：幂等，不得再建定时器
+      emit('agent/status', { agent: { session }, status: 'running' });
+      emit('agent/status', { agent: { session }, status: 'running' });
+      expect(probe.created(60000)).toBe(1);
+      expect(probe.live(60000)).toBe(1);
+
+      emit('session/event', session, {
+        type: 'tool/call',
+        data: { turn: 1, step: 1, callId: 'call-timer', name: 'read', arguments: JSON.stringify({ file_path: '/path/timer-a.ts' }) },
+      });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(server.getReceivedHeartbeats()).toHaveLength(0);
+
+      // 停止边界：停定时器 + 冲出 pending
+      emit('agent/status', { agent: { session }, status: 'idle' });
+      expect(probe.live(60000)).toBe(0);
+      expect(probe.cleared(60000)).toBe(1);
+      // 重复 idle 幂等：没有可停的定时器了
+      emit('agent/status', { agent: { session }, status: 'idle' });
+      expect(probe.cleared(60000)).toBe(1);
+      expect(probe.created(60000)).toBe(1);
+
+      for (let t = 0; t < 60 && server.getReceivedHeartbeats().length !== 1; t++) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(server.getReceivedHeartbeats().map((h: any) => h.entity)).toEqual(['/path/timer-a.ts']);
+    } finally {
+      probe.restore();
+    }
+  });
+
+  it('should flush unsent heartbeats and release the session on root agent/disposed', async () => {
+    // 用例 B：agent/disposed 是资源回收边界。
+    // 1) 未发送的 pending 心跳与磁盘缓存里的心跳都必须被冲出去；
+    // 2) 该 session 的定时器必须停干净（activeSessions 回收的可观测面：
+    //    dispose 后进程内不再有任何为该 session 存活的 interval，
+    //    且后续 restartActiveTimers 也不会再为它重建）；
+    // 3) idle 与 disposed 相邻到达（宿主两者可能连着发）时必须可重入安全：
+    //    每条心跳只上报一次。
+    const probe = observeIntervals();
+    try {
+      const { ctx, emit, saveAndNotify } = makeFakeCtx();
+      const session = { id: 'wiring-disposed', header: { cwd: process.cwd() } };
+
+      apply(ctx as Context, {
+        api_key: 'test_key_12345',
+        api_url: server.getBaseUrl(),
+        heartbeat_interval_ms: 60000,
+        project_name: '', language: '',
+        include_tool_calls: true, include_user_messages: false, include_assistant_messages: false,
+        cache_heartbeats: true, cache_limit: 100, debug: false,
+      } as any);
+
+      emit('agent/status', { agent: { session }, status: 'running' });
+      emit('session/event', session, {
+        type: 'tool/call',
+        data: { turn: 1, step: 1, callId: 'call-disposed', name: 'read', arguments: JSON.stringify({ file_path: '/path/disposed.ts' }) },
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      // 磁盘缓存里再压一条（上轮网络失败留下的）：dispose 边界必须一并冲刷
+      mkdirSync(join(testCacheDir, '.dsh', 'wakatime'), { recursive: true });
+      appendFileSync(
+        join(testCacheDir, '.dsh', 'wakatime', 'heartbeat-cache.jsonl'),
+        JSON.stringify({ entity: '/p/cached-disposed.ts', type: 'file', time: Date.now() / 1000 }) + '\n',
+      );
+
+      // 最后一次 idle 紧接 disposed：两次冲刷并发跑，不得重复上报
+      emit('agent/status', { agent: { session }, status: 'idle' });
+      emit('agent/disposed', { agent: { session } });
+
+      // 两条都应到达（1 条 pending + 1 条缓存），且没有第三条重复
+      for (let t = 0; t < 60 && server.getReceivedHeartbeats().length < 2; t++) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      const entities = server.getReceivedHeartbeats().map((h: any) => h.entity).sort();
+      expect(entities).toEqual(['/p/cached-disposed.ts', '/path/disposed.ts']);
+
+      // 无残留定时器：该 session 的 interval 已随 dispose 停干净
+      expect(probe.live(60000, 90000)).toBe(0);
+      expect(probe.created(60000)).toBe(1);
+      // 磁盘缓存被排空
+      expect(await new HeartbeatCache({ cache_limit: 100 }).count()).toBe(0);
+
+      // 心跳间隔变更会触发 restartActiveTimers（它遍历 activeSessions）：
+      // dispose 之后这个 session 不该再被复活成新定时器。
+      // 说明：强引用释放本身在进程内不可观测，这里断言的是它的可观测后果
+      //（集合里不再有任何属于该 session 的可重建状态）。
+      saveAndNotify('dsh-wakatime', {
+        api_url: server.getBaseUrl(), heartbeat_interval_ms: 90000,
+        project_name: '', language: '',
+        include_tool_calls: true, include_user_messages: false, include_assistant_messages: false,
+        cache_heartbeats: true, cache_limit: 100, debug: false,
+      });
+      expect(probe.created(90000)).toBe(0);
+      expect(probe.live(60000, 90000)).toBe(0);
+    } finally {
+      probe.restore();
     }
   });
 });

@@ -291,6 +291,9 @@ export function apply(ctx: Context, config: Config): void {
 
   const startHeartbeatTimer = (session: Session): void => {
     const state = getOrCreateState(session);
+    // 幂等：running 可能在一次会话里重复到达（唤醒输入、重试、宿主补发）。
+    // state.timer 非空即返回，绝不为同一 session 叠第二个 setInterval，
+    // 否则每个重复边都会多一条独立的冲刷节拍并永久留在 activeSessions 里。
     if (state.timer) return;
     state.timer = setInterval(() => {
       flushPendingSafely(session);
@@ -341,6 +344,19 @@ export function apply(ctx: Context, config: Config): void {
     getOrCreateState(session).tracker.trackAssistantMessage(event as any);
   });
 
+  /**
+   * 【为什么是根级监听，而不是 agent/created + agent.ctx.on(...)】
+   * 生命周期事件由宿主经 agent 的「融合 carrier」派发（@deepseek-ai/dsh-agent
+   * lib/index.js：`const fused = (payload) => ({ ...payload, agent })`），
+   * payload 一定带 agent；而 @deepseek-ai/dsh-scope 的 carrier filter 是
+   * `if (tag === void 0) return true` —— 插件 ctx 没有 scope tag，因此收得到
+   * 进程内【所有】agent 的事件。宿主一方插件同样用根级监听（dsh-compaction-basic、
+   * dsh-goal-round-driver、dsh-api-session-controller、dsh-sdk-jsonrpc-server）。
+   *
+   * agent/created 方案有真实缺陷：插件 fiber 启动【之前】就已存在的 agent 永远不会
+   * 再触发 agent/created，于是那些 agent 的 running/idle 边界无人接管、心跳定时器
+   * 根本不启动 —— 会话重启或热重载插件后，遥测会静默停摆且没有任何报错。
+   */
   ctx.on('agent/status', ({ agent, status }: { agent: Agent; status: AgentStatus }) => {
     const session = agent.session;
     if (status === 'running') {
@@ -350,6 +366,35 @@ export function apply(ctx: Context, config: Config): void {
       flushPendingSafely(session);
       flushCacheSafely();
     }
+  });
+
+  /**
+   * agent/disposed：agent 已离开注册表（宿主在 driver 静默、scoped 注册回卷之后、
+   * session detach 之前发出，@mode emit），此后不会再有该 session 的 running 边界。
+   * 这里做资源回收，顺序要紧：
+   *   1. 停定时器 —— 定时器回调闭包持有 session 与 state，不停就永远停不下来；
+   *   2. 最后一次冲刷 pending 心跳 + 磁盘缓存。dispose 与最后一次 idle 可能相邻
+   *      到达，复用 flushPendingSafely：其「快照 → clearPending」之间没有 await，
+   *      两次冲刷不会重复上报也不会漏（缓存冲刷本身在 HeartbeatCache 里有串行链）；
+   *   3. 从 activeSessions 移除。states 是 WeakMap 不阻塞回收，但 activeSessions
+   *      是强引用 Set，此前只增不减（仅 ctx.effect 卸载时清空），长跑进程会把每个
+   *      历史 session 连其 header 一起永久持有。
+   *
+   * 冲刷必须在 delete 之前发起（flushPending 的同步前缀要先把 state 取到手）。
+   * 监听器内绝不 await：@mode emit + 宿主对 unhandledRejection 是 fail-loud，
+   * 后台失败一律由 *Safely 包装自行兜底。
+   *
+   * 允许「迟到事件重新登记」：若 dispose 之后仍有 session/event 到达，说明该
+   * session 在宿主侧还活着，此时 getOrCreateState 把它加回 activeSessions 是正确
+   * 行为。不能反过来用「已 dispose」黑名单挡事件 —— 同一 Session 实例可能承载
+   * 下一个 Agent（source: resume/clear/compact），黑名单会让它永久失去追踪。
+   */
+  ctx.on('agent/disposed', ({ agent }: { agent: Agent }) => {
+    const session = agent.session;
+    stopHeartbeatTimer(session);
+    flushPendingSafely(session);
+    flushCacheSafely();
+    activeSessions.delete(session);
   });
 
   // Graceful shutdown on fiber disposal
