@@ -3,7 +3,7 @@ import { resolveLanguage } from '../src/language.js';
 import { resolveProject, resolveBranch, resolveProjectRootCount, resolveDependencies, readWakatimeCfgApiKey, maskApiKey, clearResolveCaches } from '../src/project.js';
 import { calculateWriteDiff, calculateEditDiff } from '../src/diff.js';
 import { FileTracker } from '../src/tracker.js';
-import { fieldLanded, secretSlotSet } from '../src/client/mirror.js';
+import { fieldLanded, saveFailureOf, secretSlotSet, writeAccepted, SETTINGS_NAMESPACE_CANDIDATES } from '../src/client/mirror.js';
 import type { MirrorSnapshotLike } from '../src/client/mirror.js';
 import { existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -316,6 +316,52 @@ describe('client/mirror.ts', () => {
     it('should return false without a held view or snapshot', () => {
       expect(secretSlotSet({ view: undefined }, 'wakatime', 'api_key')).toBe(false);
       expect(secretSlotSet(undefined, 'wakatime', 'api_key')).toBe(false);
+    });
+
+    it('should hit the 0.2.x row keyed by profile entry id when given candidates', () => {
+      // 0.2.x 起 describe 镜像的行键 = 条目 id（dsh-wakatime），旧体系才是 wakatime。
+      // 只写一个名字时，镜像即使接上了也查不到行 —— 指示灯依旧不亮。
+      const snap: MirrorSnapshotLike = {
+        view: { namespaces: [{ ns: 'dsh-wakatime', secrets: [{ path: ['api_key'], set: true }] }] },
+      };
+      expect(secretSlotSet(snap, 'wakatime', 'api_key')).toBe(false);
+      expect(secretSlotSet(snap, SETTINGS_NAMESPACE_CANDIDATES, 'api_key')).toBe(true);
+      // 首个命中的候选行即权威；无任何候选命中时仍是 false（不抛错）。
+      const two: MirrorSnapshotLike = {
+        view: {
+          namespaces: [
+            { ns: 'wakatime', secrets: [{ path: ['api_key'], set: false }] },
+            { ns: 'dsh-wakatime', secrets: [{ path: ['api_key'], set: true }] },
+          ],
+        },
+      };
+      expect(secretSlotSet(two, ['wakatime', 'dsh-wakatime'], 'api_key')).toBe(false);
+      expect(secretSlotSet(two, ['nope'], 'api_key')).toBe(false);
+    });
+  });
+
+  describe('writeAccepted', () => {
+    it('should unwrap both host shapes into the acceptance boolean', () => {
+      // ConfigForm.set/unset/mutate 直接给 boolean（自 0.2.0 起，拒绝不抛异常）
+      expect(writeAccepted(true)).toBe(true);
+      expect(writeAccepted(false)).toBe(false);
+      // 裸线 remote.settings.mutate 给 RemoteResult 信封，受理位在 ok 上
+      expect(writeAccepted({ ok: true, value: { ns: 'dsh-wakatime', revision: 3 } })).toBe(true);
+      expect(writeAccepted({ ok: false, error: { code: 'conflict' } })).toBe(false);
+      // 非 true 的 ok 算未受理；无判别信息的 resolve（更老宿主用抛异常表达失败）算受理
+      expect(writeAccepted({ ok: undefined })).toBe(false);
+      expect(writeAccepted(undefined)).toBe(true);
+    });
+  });
+
+  describe('saveFailureOf', () => {
+    it('should keep acceptance and landing as two independent judgements', () => {
+      expect(saveFailureOf(false, true)).toBe(null);
+      // 受理了但回读没落地 → notLanded（既有判定，不被新判定覆盖）
+      expect(saveFailureOf(false, false)).toBe('notLanded');
+      // 被拒是更靠前的因；即使回读恰好显示一致也不谎报成功
+      expect(saveFailureOf(true, false)).toBe('refused');
+      expect(saveFailureOf(true, true)).toBe('refused');
     });
   });
 

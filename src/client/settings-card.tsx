@@ -8,9 +8,11 @@
  * （label 左 + switch 右，说明常驻）；文本/数值/secret 字段的说明收进
  * 24×24 帮助按钮（12px 官方图标集 `IconInfoOutlineRegular`，点击展开）；底部保留保存/放弃按钮。
  *
- * 行为不变：字段为「label 行（覆盖徽章 + 重置）→ 输入控件 → 说明/错误」
- * 结构；非法草稿阻塞保存；保存后回读校验，未落地的草稿保留并报错；
- * secret 字段只显示配置状态、空白草稿不写入（值不回显）。
+ * 行为：字段为「label 行（覆盖徽章 + 重置）→ 输入控件 → 说明/错误」结构；
+ * 非法草稿阻塞保存；保存有**两条独立判定**——Host 是否受理本次写入
+ * （`scope.set` 返回 false ⇒ 未受理）、以及回读是否看到真值（未落地），
+ * 两者互不覆盖、任一不过都保留草稿并报错（这一版共用既有文案）；secret 字段只显示配置状态、
+ * 空白草稿不写入（值不回显）。
  *
  * 文案语言：全部微文案（分组头/label/hint/按钮/徽章/错误）经 `useWkT`
  * 跟随宿主 DSH 的界面语言（zh/en 双语字典见 strings.ts），语言切换实时
@@ -25,16 +27,16 @@
 
 import { useEffect, useState } from 'react';
 import { IconInfoOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives';
-import type { FieldKind, MirrorSnapshotLike, ScopeLike, SettingsMirrorFace } from './mirror.ts';
-import { fieldLanded, secretSlotSet } from './mirror.ts';
+import type { FieldKind, MirrorSnapshotLike, SaveFailure, ScopeLike, SettingsMirrorFace } from './mirror.ts';
+import { SETTINGS_NAMESPACE_CANDIDATES, fieldLanded, saveFailureOf, secretSlotSet } from './mirror.ts';
 import { injectStyles } from './styles.ts';
 import type { WkFieldKey, WkSectionId, WkStrings } from './strings.ts';
 import { format } from './strings.ts';
 import { useWkT, type LocaleFaceLike } from './useWkT.ts';
 
 export type { FieldKind } from './mirror.ts';
-export type { MirrorSnapshotLike, ScopeLike, SettingsMirrorFace } from './mirror.ts';
-export { fieldLanded, secretSlotSet } from './mirror.ts';
+export type { MirrorSnapshotLike, SaveFailure, ScopeLike, SettingsMirrorFace } from './mirror.ts';
+export { SETTINGS_NAMESPACE_CANDIDATES, fieldLanded, saveFailureOf, secretSlotSet, writeAccepted } from './mirror.ts';
 export type { LocaleFaceLike } from './useWkT.ts';
 
 /** 配置字段定义（key / 输入形态 / 所属分组 id）；label/hint 经字典按 key 解析。 */
@@ -65,13 +67,23 @@ export const WAKATIME_FIELDS: ReadonlyArray<{
 /** 分组渲染顺序（标题文案经字典 sections 表解析）。 */
 const SECTIONS: ReadonlyArray<WkSectionId> = ['api', 'tracking', 'cacheDebug'];
 
-/** settings 命名空间（与 host 端一致）。 */
-const SETTINGS_NAMESPACE = 'wakatime';
+/**
+ * 本卡片要观察的 settings 命名空间候选（复用 mirror.ts 那一份常量）。
+ * 0.2.x 起 describe 镜像的行键 = profile 条目 id `dsh-wakatime`，旧 settings.yaml
+ * 体系才是 `wakatime`；只写一个会让"镜像接上了却查不到行、徽章依旧不亮"。
+ */
+const SECRET_NS = SETTINGS_NAMESPACE_CANDIDATES;
 
 /** 卡片组件 props：由槽位注册的 inject 提供。 */
 export interface WakaTimeCardProps {
   scope: ScopeLike;
-  /** 共享 describe 镜像面：secret 槽位的配置状态只经此观察（线路对 secret 脱敏）。 */
+  /**
+   * 共享 describe 镜像面：secret 槽位的配置状态只经此观察（线路对 secret 脱敏）。
+   * 由 index.ts 从 `ctx.get('configForms').describe()` 取到并注入**两处**注册
+   * （详情页 + 设置页）。此前这个 prop 声明了却从未被传入，`mirror?.getSnapshot()`
+   * 恒为 undefined ⇒ 「已配置」指示灯永远不亮；取不到镜像时仍传 undefined，
+   * 卡片降级为不显示配置状态。
+   */
   mirror?: SettingsMirrorFace;
   /** 宿主 locale 服务（可选）：卡片文案跟随宿主界面语言，缺失回退中文。 */
   locale?: LocaleFaceLike;
@@ -294,7 +306,12 @@ export function WakaTimeCard({ scope, mirror, locale, surface }: WakaTimeCardPro
   }, [mirror]);
   const [edits, setEdits] = useState<Edits>({});
   const [saving, setSaving] = useState(false);
-  const [failed, setFailed] = useState(false);
+  /**
+   * 保存失败成因：`refused` = Host 未受理本次写入（ConfigForm.set/unset 返回
+   * false 或裸线应答 ok:false / 抛异常）；`notLanded` = 受理了但回读没看到真值。
+   * null = 无失败。两条判定各查各的，谁都不覆盖谁（见 save()）。
+   */
+  const [failure, setFailure] = useState<SaveFailure | null>(null);
 
   // 「在设置中显示」开关：仅详情页显示，控制 settings.section 是否注册。
   // localStorage 非响应式，切换后需刷新页面生效。
@@ -335,7 +352,7 @@ export function WakaTimeCard({ scope, mirror, locale, surface }: WakaTimeCardPro
   const isOverridden = (key: string): boolean => Object.prototype.hasOwnProperty.call(user, key);
 
   const edit = (key: string, text: string): void => {
-    setFailed(false);
+    setFailure(null);
     setEdits(prev => ({ ...prev, [key]: text }));
   };
 
@@ -346,13 +363,26 @@ export function WakaTimeCard({ scope, mirror, locale, surface }: WakaTimeCardPro
     let staged: string;
     if (def.kind === 'boolean') staged = composed === true || composed === 'true' ? 'true' : 'false';
     else staged = composed === undefined || composed === null ? '' : String(composed);
-    setFailed(false);
+    setFailure(null);
     setEdits(prev => ({ ...prev, [key]: staged }));
   };
 
+  /**
+   * 保存：两条独立判定，各查各的、互不覆盖。
+   *  1) **受理位**：`scope.set` 返回 false ⇒ Host 明确拒收这次写入。两条注入
+   *     路径的 scope 都已归一成 `Promise<boolean>`——详情页是宿主 ConfigForm
+   *     （自 0.2.0 起就返回 boolean，拒绝**不抛异常**），设置页是本插件的
+   *     `remoteSettingsScope`（把裸线 `RemoteResult` 信封的 `.ok` 折成 boolean）。
+   *     故这里只判 `=== false`，不对 boolean 再取 `.ok`，也不把 undefined
+   *     （更老宿主没有这个信号）误判成失败——那种情况交给第 2 条兜底。
+   *  2) **落地位**：回读校验（原有逻辑保留）。Host 是唯一权威；受理了但回读
+   *     没看到真值同样是失败。secret 字段在线路上全程脱敏（value/user 均不
+   *     携带），只能经镜像 secrets 槽位的 set 状态判定落地。
+   * 两条都通过才清空草稿；任一不过都保留草稿并报错，成因不同文案不同。
+   */
   const save = async (): Promise<void> => {
     setSaving(true);
-    setFailed(false);
+    setFailure(null);
     try {
       const stagedFinals: Record<string, unknown> = {};
       for (const [key, raw] of Object.entries(edits)) {
@@ -368,8 +398,12 @@ export function WakaTimeCard({ scope, mirror, locale, surface }: WakaTimeCardPro
           stagedFinals[key] = raw;
         }
       }
+      let refused = false;
       for (const [key, final] of Object.entries(stagedFinals)) {
-        await scope.set(key, final);
+        const accepted = await scope.set(key, final);
+        // 只认显式 false；被拒后继续写完其余字段，让一次保存给出完整结论，
+        // 也让 Host 侧对各字段独立判定（可能只有一个是非法的）。
+        if (accepted === false) refused = true;
       }
       // 回读校验：Host 是唯一权威；未落地的字段保留草稿并报错。
       // secret 字段在线路上全程脱敏（value/user 均不携带），只能经镜像
@@ -386,16 +420,16 @@ export function WakaTimeCard({ scope, mirror, locale, surface }: WakaTimeCardPro
           final,
           postUser,
           postValue,
-          secretSlotSet(mirror?.getSnapshot(), SETTINGS_NAMESPACE, key),
+          secretSlotSet(mirror?.getSnapshot(), SECRET_NS, key),
         );
       });
-      if (landed) {
-        setEdits({});
-      } else {
-        setFailed(true);
-      }
+      const outcome = saveFailureOf(refused, landed);
+      setFailure(outcome);
+      // 只有"受理 + 落地"双双通过才清草稿：被拒时保留，用户可就地改后重试。
+      if (outcome === null) setEdits({});
     } catch {
-      setFailed(true); // 写入被拒（如 revision 冲突）：保留草稿供修正
+      // 传输/装配层异常（超时、方法未挂载）：等同未被受理，保留草稿供修正。
+      setFailure('refused');
     } finally {
       setSaving(false);
     }
@@ -403,7 +437,7 @@ export function WakaTimeCard({ scope, mirror, locale, surface }: WakaTimeCardPro
 
   const discard = (): void => {
     setEdits({});
-    setFailed(false);
+    setFailure(null);
   };
 
   /** 按分组顺序渲染字段（布尔 → toggle 行；其余 → label+帮助按钮 → 输入）。 */
@@ -415,7 +449,7 @@ export function WakaTimeCard({ scope, mirror, locale, surface }: WakaTimeCardPro
         return (
           <SecretField
             key={f.key} id={id} def={f} text={'api_key' in edits ? edits.api_key : ''}
-            configured={secretSlotSet(mirror?.getSnapshot(), SETTINGS_NAMESPACE, f.key)}
+            configured={secretSlotSet(mirror?.getSnapshot(), SECRET_NS, f.key)}
             disabled={!writable || saving} t={t}
             onEdit={(tt) => edit(f.key, tt)}
           />
@@ -479,7 +513,14 @@ export function WakaTimeCard({ scope, mirror, locale, surface }: WakaTimeCardPro
         </section>
       ))}
       <div className="wk-card-footer">
-        {failed ? <p className="wk-card-failed" role="status">{t.saveFailed}</p> : null}
+        {failure ? (
+          <p className="wk-card-failed" role="status">
+            {/* 两条判定各自计算（见 save()），呈现统一复用既有"未落地"文案：
+                这一版不新增 i18n 键。TODO：若要区分"Host 未受理"与"受理了但未落地"
+                两种提示，需在 strings.ts 的 zh/en 两份字典同步补一个键。 */}
+            {t.saveFailed}
+          </p>
+        ) : null}
         {dirty ? (
           <button type="button" className="wk-card-discard" disabled={saving} onClick={discard}>
             {t.discard}
