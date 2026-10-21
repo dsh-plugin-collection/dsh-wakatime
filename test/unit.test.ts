@@ -5,6 +5,7 @@ import { calculateWriteDiff, calculateEditDiff } from '../src/diff.js';
 import { FileTracker } from '../src/tracker.js';
 import { fieldLanded, saveFailureOf, secretSlotSet, writeAccepted, SETTINGS_NAMESPACE_CANDIDATES } from '../src/client/mirror.js';
 import type { MirrorSnapshotLike } from '../src/client/mirror.js';
+import { wkDicts } from '../src/client/strings.js';
 import { existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -362,6 +363,45 @@ describe('client/mirror.ts', () => {
       // 被拒是更靠前的因；即使回读恰好显示一致也不谎报成功
       expect(saveFailureOf(true, false)).toBe('refused');
       expect(saveFailureOf(true, true)).toBe('refused');
+    });
+
+    it('should map each failure cause to its own distinct copy', () => {
+      // 渲染层按成因取键（settings-card 的 footer）：refused → saveRefused，
+      // notLanded → saveFailed。两种失败必须能肉眼区分——只改取值和重试是两个
+      // 不同的用户动作，共用一句话会让用户无从判断下一步该做什么。
+      const keyFor = (f: NonNullable<ReturnType<typeof saveFailureOf>>): 'saveRefused' | 'saveFailed' =>
+        f === 'refused' ? 'saveRefused' : 'saveFailed';
+
+      // 两个成因不得落到同一个键上
+      expect(keyFor(saveFailureOf(true, false))).not.toBe(keyFor(saveFailureOf(false, false)));
+
+      const refusedKey = keyFor(saveFailureOf(true, false));
+      const notLandedKey = keyFor(saveFailureOf(false, false));
+      for (const locale of ['zh', 'en'] as const) {
+        const d = wkDicts[locale];
+        expect(d[refusedKey]).not.toBe(d[notLandedKey]);
+        // 键确实存在且非空（防止有人只补一侧字典或留空串）
+        expect(d[refusedKey].length).toBeGreaterThan(0);
+        expect(d[notLandedKey].length).toBeGreaterThan(0);
+      }
+    });
+  });
+
+  describe('wkDicts', () => {
+    it('should keep zh and en key sets identical', () => {
+      // 类型层的映射类型已挡住漏键；这里挡住【运行时】才暴露的形态差异
+      //（数组/对象嵌套，或有人绕过类型断言塞进不一致的字典）。
+      expect(Object.keys(wkDicts.en).sort()).toEqual(Object.keys(wkDicts.zh).sort());
+      expect(Object.keys(wkDicts.en.fields).sort()).toEqual(Object.keys(wkDicts.zh.fields).sort());
+    });
+
+    it('should give the save-failure pair different copy in both locales', () => {
+      // 本用例是 issue #11 遗留的直接回归守卫：这两个键曾经共用一句
+      //「保存未落地」，肉眼分不出「Host 未受理」与「受理了但未落地」。
+      for (const locale of ['zh', 'en'] as const) {
+        const d = wkDicts[locale];
+        expect(d.saveRefused).not.toBe(d.saveFailed);
+      }
     });
   });
 
