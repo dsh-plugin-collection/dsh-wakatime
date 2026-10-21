@@ -515,10 +515,11 @@ export function WakaTimeCard({ scope, mirror, locale, surface }: WakaTimeCardPro
       <div className="wk-card-footer">
         {failure ? (
           <p className="wk-card-failed" role="status">
-            {/* 两条判定各自计算（见 save()），呈现统一复用既有"未落地"文案：
-                这一版不新增 i18n 键。TODO：若要区分"Host 未受理"与"受理了但未落地"
-                两种提示，需在 strings.ts 的 zh/en 两份字典同步补一个键。 */}
-            {t.saveFailed}
+            {/* 两条判定各自计算（见 save()），此处按成因取不同文案：
+                'refused' = Host 未受理本次写入；'notLanded' = 受理了但回读没落地。
+                两句话必须能肉眼区分——共用一句话会让用户无从判断该改取值还是重试。
+                键的语义互斥性由 strings.ts 的字典与单测共同保证。 */}
+            {failure === 'refused' ? t.saveRefused : t.saveFailed}
           </p>
         ) : null}
         {dirty ? (

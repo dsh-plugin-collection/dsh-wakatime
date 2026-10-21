@@ -44,7 +44,10 @@ const zh = {
   // 模式（ConfigFormSnapshot 不再有 mode 字段），这句现在是错的。不可写的真因是宿主
   // 判定文档不可写（view.writable === false），与"内存"无关。
   readOnlyNote: '当前部署不可写',
-  saveFailed: '保存未落地，请检查后重试',
+  /** 保存失败成因之一（SaveFailure='refused'）：Host 明确未受理本次写入 */
+  saveRefused: 'Host 拒绝了本次写入，请检查取值是否合法',
+  /** 保存失败成因之二（SaveFailure='notLanded'）：Host 受理了，但回读没看到真值 */
+  saveFailed: '已受理但未落地，请检查后重试',
   discard: '放弃修改',
   save: '保存',
   saving: '保存中…',
@@ -82,7 +85,8 @@ const en: { [K in keyof typeof zh]: string } = {
   configured: 'Configured',
   notConfigured: 'Not configured',
   readOnlyNote: 'Read-only on this deployment',
-  saveFailed: 'Save did not land; check and retry',
+  saveRefused: 'The host refused this write; check that the values are valid',
+  saveFailed: 'Accepted but did not land; check and retry',
   discard: 'Discard changes',
   save: 'Save',
   saving: 'Saving…',
