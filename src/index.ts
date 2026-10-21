@@ -2,8 +2,12 @@ import type { Context } from '@deepseek-ai/cordis';
 import Schema from '@deepseek-ai/schemastery';
 // Type-only side-effect imports: register the `agent/status` and
 // `session/event` extensions on the Cordis event surface.
+// `dsh-settings` 同理：它把 `ctx.settings` 属性与 `settings/document-updated` 事件
+// 合并进 cordis 的 Context/Events 类型。原先这个副作用由 src/settings.ts 顶部的一行
+// import 提供（该文件其余部分已确认无任何消费者，随本次清理移除）。
 import type {} from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-session';
+import type {} from '@deepseek-ai/dsh-settings';
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session';
 import type { Agent, AgentStatus } from '@deepseek-ai/dsh-agent';
 import { WakaTimeClient } from './wakatime.js';

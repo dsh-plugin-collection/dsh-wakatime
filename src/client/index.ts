@@ -20,8 +20,6 @@
  * 槽位名改为 `settings.section`（`settings.plugin.item` 在 0.1.7/0.2.0 不存在）。
  *
  * TODO（本版刻意未做）：
- *  - 「写入未被受理」目前复用既有的「保存未落地」文案；要分开提示需在 strings.ts
- *    的 zh/en 两份字典同步补一个键（卡片已把成因留在 `failure` 状态里，接上即可）。
  *  - 卡片组件级测试（保存流程两条判定的渲染断言）：本仓库 vitest 是 node 环境、
  *    无 jsdom，也没有 react 依赖，这一版只测 mirror.ts 的纯函数。
  * @module dsh-wakatime/client
