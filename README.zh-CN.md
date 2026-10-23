@@ -193,7 +193,7 @@ api_key = sk-xxxxxxxxxxxx
 | `write` | `coding` | true |
 | `edit` | `coding` | true |
 | `read` | `browsing` | false |
-| `bash` / `pwsh` | `building` | false |
+| `bash` / `pwsh` | 由命令本身判定，见下方「shell 类别判定」 | false |
 | `grep` / `glob` | `browsing` | false |
 | `web_search` | `researching` | false |
 | `mcp__codegraph__codegraph_explore` | `code reviewing` | false |
@@ -284,14 +284,39 @@ src/
    仍然出现「逐条拒绝」告警时，说明有字段不在裁剪覆盖范围内，请把告警里的
    服务端原因贴到 issue 上。
 
-### 已知边界：所有 shell 命令都计入 building
+### shell 类别判定
 
-`bash` / `pwsh` 的工具调用一律上报为 `type=app`、`category=building`、
-`language=Shell`，且 `entity` 是整条命令原文。因此 shell 用量大的会话里，
-「编码时间」会被系统性算成「构建时间」、语言分布被 Shell 压顶，
-每个不同命令还会各成一个 entity（基数爆炸）。官方 CLI 只把真正的
-构建/测试命令归入 building。改动这一语义会影响历史数据的可比性，
-因此本插件暂未调整，保持现状记录。
+`bash` / `pwsh` 的类别由命令本身决定（`src/category.ts`），不再一律记 `building`。
+用账号里已存的 5290 条 shell 心跳复盘，改动前后的分布是：
+
+| 类别 | 改动前 | 改动后 |
+|---|---|---|
+| `building` | 100.0% | 1.3% |
+| `coding` | — | 50.6% |
+| `browsing` | — | 46.4% |
+| `researching` | — | 0.8% |
+| `running tests` | — | 0.5% |
+| `debugging` | — | 0.3% |
+
+也就是说此前看到的「构建时间」里 98.7% 其实不是构建。
+
+判定规则与几点硬约束：
+
+- **只看裸子命令，不看后续参数。** 反例是 `grep -n foo test/a_test.py`——路径里
+  含 `test` 曾被误判成跑测试（账号里凭空多出 411 条假测试记录）。文件检视类命令
+  （`ls` / `cat` / `grep` / `sed` / `head` …）无条件算 `browsing`。
+- **先剥包装层**：前导 `cd <dir> &&`、`export`、`sudo` / `time` / `timeout`、
+  以及 `npx` / `bunx` 的一次性执行前缀（含 `--yes`、`--package <包>`、`vitest@2`
+  这些形式），否则 DSH 会话里最常见的 `cd repo && pnpm test | tail` 永远取到 `cd`。
+- **类别取值只用 WakaTime 权威集合**（见 `wakatime-cli` 的 `pkg/heartbeat/category.go`）：
+  表里没有 `deployment`，也没有 `testing`（正确值是 `running tests`）；自造词在面板上
+  无法聚合。`docker` / `kubectl` 这类平台工具因此按子命令拆成 `browsing`（看状态）
+  与 `building`（执行变更）。
+- 认不出来的命令按 `coding` 计。
+
+仍然存在的边界：`entity` 依旧是整条命令原文，5281 条 shell 心跳对应 **5158 个不同
+entity、98.2% 只出现过一次**——命令维度上没有可聚合性；`language` 也仍固定为 `Shell`。
+这两项会改变与历史数据的可比性，未在本版本调整。
 
 ## 许可证
 

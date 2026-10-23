@@ -67,13 +67,15 @@ export class WakaTimeRateLimitError extends WakaTimeError {
 /**
  * DSH tool name to WakaTime category mapping
  * 严格遵循 PRD 3.2 映射表
+ *
+ * `bash` / `pwsh` 不在这张表里：它们的类别由命令本身判定（见 category.ts）。
+ * 此前固定映射到 `building`，实测账号里 5281 条 shell 心跳中真正在构建的只有
+ * 0.5%，等于把「查看文件」全记成「构建」。
  */
 export const TOOL_CATEGORY_MAP: Record<string, string> = {
   write: 'coding',
   edit: 'coding',
   read: 'browsing',
-  bash: 'building',
-  pwsh: 'building',
   grep: 'browsing',
   glob: 'browsing',
   web_search: 'researching',
