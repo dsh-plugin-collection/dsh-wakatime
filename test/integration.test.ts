@@ -205,9 +205,106 @@ describe('Integration Tests', () => {
 
       expect(server.getReceivedHeartbeats()).toHaveLength(30);
     });
+
+    it('clamps the entity to the server-side 2083-character cap', async () => {
+      // 回归背景：bash 的 entity 是整条命令原文。线上实测超长 entity 会被
+      // heartbeats.bulk 逐条 400 拒掉（外层仍是 202），旧实现看不见也重试不了，
+      // 等于把这类心跳静默丢掉。
+      const mockSession = { id: 'test-session', header: { cwd: process.cwd() } };
+      const tracker = new FileTracker(mockSession as any, { project_name: '', language: '' });
+      const longCommand = `python3 - <<'EOF'\n${'x'.repeat(5000)}\nEOF`;
+
+      await tracker.trackToolCall({
+        type: 'tool/call',
+        data: { turn: 1, step: 1, callId: 'call-long', name: 'bash', arguments: JSON.stringify({ command: longCommand }) },
+      } as any);
+
+      const [heartbeat] = tracker.getPending();
+      expect(heartbeat.entity.length).toBeLessThanOrEqual(2083);
+      // 裁剪保留前缀，仍然可作为可辨识的 entity；尾部是省略号标记。
+      expect(heartbeat.entity.startsWith('python3 - <<')).toBe(true);
+      expect(heartbeat.entity.endsWith('...')).toBe(true);
+    });
+
+    it('keeps every string field inside the server-side limits', async () => {
+      // 逐条 400 的第二个来源：project/branch 的上限是 1024（entity 是 2083）。
+      // 覆盖路径：用户在设置页把「项目名称」填成超长串、或某个 package.json
+      // 的 name 异常长——两者都会让该会话的【每一条】心跳被拒。
+      const mockSession = { id: 'test-session', header: { cwd: process.cwd() } };
+      const tracker = new FileTracker(mockSession as any, {
+        project_name: 'p'.repeat(3000),
+        language: 'L'.repeat(3000),
+      });
+
+      await tracker.trackToolCall({
+        type: 'tool/call',
+        data: { turn: 1, step: 1, callId: 'c-1', name: 'read', arguments: JSON.stringify({ file_path: '/path/limits.ts' }) },
+      } as any);
+
+      const [heartbeat] = tracker.getPending();
+      expect(heartbeat.project).toBeDefined();
+      expect(heartbeat.project!.length).toBeLessThanOrEqual(1024);
+      expect(heartbeat.language!.length).toBeLessThanOrEqual(1024);
+      if (heartbeat.dependencies) {
+        for (const dep of heartbeat.dependencies) expect(dep.length).toBeLessThanOrEqual(1024);
+      }
+    });
+
+    it('omits a project that resolves to an empty string instead of sending it', async () => {
+      // 服务端校验是 "between 1 and 1024"：空串同样被逐条 400 拒掉。
+      // 不发这个字段则交给 WakaTime 自己推断，比整条心跳被拒好。
+      const mockSession = { id: 'test-session', header: { cwd: process.cwd() } };
+      const tracker = new FileTracker(mockSession as any, { project_name: '   ', language: '' });
+
+      await tracker.trackToolCall({
+        type: 'tool/call',
+        data: { turn: 1, step: 1, callId: 'c-1', name: 'read', arguments: JSON.stringify({ file_path: '/path/blank.ts' }) },
+      } as any);
+
+      const [heartbeat] = tracker.getPending();
+      expect(heartbeat.project).toBeUndefined();
+    });
+
+    it('stamps the heartbeat with the event time, not the processing time', async () => {
+      // 事件从产生到被处理之间隔着队列积压与 project/branch 探测的 await，
+      // 用 Date.now() 会把活动记到错误时刻，直接污染 WakaTime 的时长计算。
+      const mockSession = { id: 'test-session', header: { cwd: process.cwd() } };
+      const tracker = new FileTracker(mockSession as any, { project_name: '', language: '' });
+      const eventTimeMs = 1_700_000_000_000;
+
+      await tracker.trackToolCall({
+        type: 'tool/call',
+        time: eventTimeMs,
+        data: { turn: 1, step: 1, callId: 'call-t', name: 'read', arguments: JSON.stringify({ file_path: '/path/t.ts' }) },
+      } as any);
+      await tracker.trackAssistantMessage({
+        type: 'assistant/message',
+        time: eventTimeMs + 5_000,
+        data: { turn: 1, step: 2, message: { content: 'ok' }, usage: { inputTokens: 10, outputTokens: 2 } },
+      } as any);
+
+      const pending = tracker.getPending();
+      expect(pending.some((hb) => hb.time === eventTimeMs / 1000)).toBe(true);
+      expect(pending.some((hb) => hb.category === 'ai coding' && hb.time === (eventTimeMs + 5_000) / 1000)).toBe(true);
+    });
   });
 
   describe('Error handling', () => {
+    it('fails fast with a clear message when no API key is configured', async () => {
+      // 「没配 key」必须和「key 配错」区分开：放过去让服务端回 401，一来日志
+      // 会说「API Key 无效，请检查配置」，二来这次 401 写入 authFailRetryAfter，
+      // 之后 5 分钟的心跳只能进本地缓存并被 cache_limit 截断。
+      const emptyClient = new WakaTimeClient({ api_key: '', api_url: server.getBaseUrl() });
+      const heartbeat: WakaTimeHeartbeat = {
+        entity: '/path/file.ts',
+        type: 'file',
+        time: Date.now() / 1000,
+      };
+      await expect(emptyClient.sendHeartbeats([heartbeat])).rejects.toThrow(/未配置 WakaTime API Key/);
+      // 一条 HTTP 请求都不该发出
+      expect(server.getReceivedHeartbeats()).toHaveLength(0);
+    });
+
     it('should handle 401 error gracefully', async () => {
       server.setShouldFail401(true);
       
@@ -288,7 +385,61 @@ describe('Integration Tests', () => {
         type: 'file',
         time: Date.now() / 1000,
       };
-      await expect(client.sendHeartbeat(heartbeat)).resolves.toBeUndefined();
+      await expect(client.sendHeartbeat(heartbeat)).resolves.toEqual({ accepted: 1, rejected: [] });
+    });
+  });
+
+  /**
+   * heartbeats.bulk 的「外层 202 + 逐条状态码」契约。
+   *
+   * 只判 `response.ok` 的实现会把整批被拒读成整批成功：被拒的心跳既不进缓存
+   * 也不报错，是纯粹的数据丢失。这一组用例钉住的是「拒绝必须可见」。
+   */
+  describe('Bulk per-item status', () => {
+    const hb = (entity: string): WakaTimeHeartbeat => ({
+      entity,
+      type: 'file',
+      category: 'coding',
+      time: Date.now() / 1000,
+    });
+
+    it('reports each rejected item with its payload index, status and reason', async () => {
+      server.setRejectEntitySubstrings(['BAD']);
+      const result = await client.sendHeartbeats([hb('/ok/a.ts'), hb('/path/BAD.ts'), hb('/ok/b.ts')]);
+
+      expect(result.accepted).toBe(2);
+      expect(result.rejected).toHaveLength(1);
+      const [rejected] = result.rejected;
+      // index 必须指回 payloads，调用方才能把坏条目从重试集合里剔除
+      expect(rejected.index).toBe(1);
+      expect(rejected.status).toBe(400);
+      expect(rejected.detail).toContain('2083');
+      // 4xx 校验失败与传输无关：同一条载荷重试必然再失败
+      expect(rejected.permanent).toBe(true);
+      // 外层仍是 2xx，坏条目不影响同批其余心跳入库
+      expect(server.getReceivedHeartbeats()).toHaveLength(3);
+    });
+
+    it('classifies a 429 item as retryable, unlike a validation 400', async () => {
+      // 限流说明载荷没问题：必须回缓存重试，而不是当垃圾丢掉。
+      server.setRejectEntitySubstrings(['THROTTLED']);
+      server.setPerItemRejectStatus(429);
+      const throttled = await client.sendHeartbeats([hb('/a/THROTTLED.ts')]);
+      expect(throttled.rejected).toHaveLength(1);
+      expect(throttled.rejected[0].permanent).toBe(false);
+
+      // 同一批换一个状态码，判定必须跟着变（400 校验 = 重试无效）
+      server.setPerItemRejectStatus(400);
+      const invalid = await client.sendHeartbeats([hb('/a/THROTTLED.ts')]);
+      expect(invalid.rejected[0].permanent).toBe(true);
+      server.setRejectEntitySubstrings([]);
+    });
+
+    it('reports a clean batch as all-accepted with no rejections', async () => {
+      expect(await client.sendHeartbeats([hb('/ok/a.ts'), hb('/ok/b.ts')])).toEqual({
+        accepted: 2,
+        rejected: [],
+      });
     });
   });
 
@@ -387,6 +538,12 @@ describe('Plugin wiring (apply)', () => {
     for (const row of initialRows ?? []) rowsByNs.set(row.ns, row);
     /** describe() 被调用的次数：用来断言 ns 过滤真的挡掉了无关事件。 */
     let describeCalls = 0;
+    /**
+     * logger.warn/error 收到的消息。
+     * 上报失败必须默认可见（旧实现只在 debug 下打印且不打原因），
+     * 「失败说了什么」是有回归价值的断言对象，因此这里把日志纳入可观测面。
+     */
+    const logMessages: string[] = [];
     const settings = {
       describe: (_opts?: { redactSecrets?: boolean }) => {
         describeCalls++;
@@ -398,7 +555,11 @@ describe('Plugin wiring (apply)', () => {
     const effectDisposers: Array<() => void> = [];
     const raw = {
       registry: { values: () => [] },
-      logger: { info: () => {}, warn: () => {}, error: () => {} },
+      logger: {
+        info: () => {},
+        warn: (...args: unknown[]) => { logMessages.push(args.map((a) => String(a)).join(' ')); },
+        error: (...args: unknown[]) => { logMessages.push(args.map((a) => String(a)).join(' ')); },
+      },
       inject: (names: string[], cb: (c: unknown) => void) => {
         if (names.includes('settings')) cb(settingsCtx);
       },
@@ -444,7 +605,15 @@ describe('Plugin wiring (apply)', () => {
     // 不是插件泄漏。多个 ctx 在同一用例内共存时，登记顺序即卸载的逆序。
     const fiber = { unload };
     activeFibers.push(fiber);
-    return { ctx: raw as unknown as Context, emit, saveAndNotify, describeCallCount, unload };
+    return {
+      ctx: raw as unknown as Context,
+      emit,
+      saveAndNotify,
+      describeCallCount,
+      unload,
+      /** 到目前为止 logger.warn/error 记下的消息（按顺序）。 */
+      logs: () => [...logMessages],
+    };
   }
 
   /**
@@ -568,6 +737,168 @@ describe('Plugin wiring (apply)', () => {
     }
     expect(server.getReceivedHeartbeats().map((h: any) => h.entity).sort())
       .toEqual(['/path/stop-0.ts', '/path/stop-1.ts', '/path/stop-2.ts', '/path/stop-3.ts', '/path/stop-4.ts', '/path/stop-5.ts']);
+  });
+
+  it('re-sends nothing that already landed when a later batch fails', async () => {
+    // 回归背景：旧 flushPending 在 catch 里无条件 `appendBatch(heartbeats)`——
+    // 第 2 批失败时第 1 批【已入库】的心跳也被写回缓存，下次冲刷整批重发。
+    // 服务端按相邻心跳间隔算时长、按条目累加 token/行数，重复上报直接表现为
+    // 「WakaTime 上的数翻倍/时间凭空变多」。
+    const { ctx, emit, logs } = makeFakeCtx();
+    const session = { id: 'wiring-partial', header: { cwd: process.cwd() } };
+    server.setShouldFail500After(1); // 只有第一个 POST 成功
+
+    apply(ctx as Context, {
+      api_key: 'test_key_12345',
+      api_url: server.getBaseUrl(),
+      heartbeat_interval_ms: 60000,
+      project_name: 'partial-test', language: '',
+      include_tool_calls: true, include_user_messages: false, include_assistant_messages: false,
+      cache_heartbeats: true, cache_limit: 100, debug: false,
+    } as any);
+
+    emit('agent/status', { agent: { session }, status: 'running' });
+    const total = 26; // 跨过 25 条一批的边界
+    for (let i = 0; i < total; i++) {
+      emit('session/event', session, {
+        type: 'tool/call',
+        data: { turn: 1, step: i, callId: `c-${i}`, name: 'read', arguments: JSON.stringify({ file_path: `/path/partial-${i}.ts` }) },
+      });
+    }
+    emit('agent/status', { agent: { session }, status: 'idle' });
+
+    const cache = new HeartbeatCache({ cache_limit: 100 });
+    // 等两条链路稳定：在途追踪 + 缓存写入（fire-and-forget）
+    for (let t = 0; t < 200 && server.getReceivedHeartbeats().length === 0; t++) {
+      await new Promise(r => setTimeout(r, 25));
+    }
+    await new Promise(r => setTimeout(r, 200));
+
+    const received = server.getReceivedHeartbeats().map((h: any) => h.entity);
+    const cached = (await cache.readAll()).map((h) => h.entity);
+    // 不变式：已入库的 + 待重试的 = 全部心跳，一条不重、一条不落。
+    expect(received.length + cached.length).toBe(total);
+    expect(new Set([...received, ...cached]).size).toBe(total);
+    expect(received.length).toBeGreaterThan(0);
+    expect(cached.length).toBeGreaterThan(0);
+    // 失败原因必须默认可见（旧实现只在 debug 下打一行「flush failed」，不带原因）。
+    expect(logs().some((m) => m.includes('上报失败') && m.includes('500'))).toBe(true);
+
+    // 网络恢复后：缓存里的那条补发成功，且此前已入库的绝不重发。
+    server.setShouldFail500After(-1);
+    emit('agent/status', { agent: { session }, status: 'idle' });
+    for (let t = 0; t < 200 && (await cache.count()) > 0; t++) {
+      await new Promise(r => setTimeout(r, 25));
+    }
+    expect(await cache.count()).toBe(0);
+    const final = server.getReceivedHeartbeats().map((h: any) => h.entity);
+    expect(final).toHaveLength(total);
+    expect(new Set(final).size).toBe(total);
+  });
+
+  it('surfaces per-item rejections instead of silently dropping them', async () => {
+    // 外层 202 + 逐条 400 是最坏的一种丢数据：不报错、不重试、不留痕。
+    const { ctx, emit, logs } = makeFakeCtx();
+    const session = { id: 'wiring-permanent', header: { cwd: process.cwd() } };
+    server.setRejectEntitySubstrings(['REJECTED']);
+
+    apply(ctx as Context, {
+      api_key: 'test_key_12345',
+      api_url: server.getBaseUrl(),
+      heartbeat_interval_ms: 60000,
+      project_name: 'permanent-test', language: '',
+      include_tool_calls: true, include_user_messages: false, include_assistant_messages: false,
+      cache_heartbeats: true, cache_limit: 100, debug: false,
+    } as any);
+
+    emit('agent/status', { agent: { session }, status: 'running' });
+    emit('session/event', session, {
+      type: 'tool/call',
+      data: { turn: 1, step: 1, callId: 'ok-1', name: 'read', arguments: JSON.stringify({ file_path: '/path/ok.ts' }) },
+    });
+    emit('session/event', session, {
+      type: 'tool/call',
+      data: { turn: 1, step: 2, callId: 'bad-1', name: 'read', arguments: JSON.stringify({ file_path: '/path/REJECTED.ts' }) },
+    });
+    emit('agent/status', { agent: { session }, status: 'idle' });
+
+    for (let t = 0; t < 200 && logs().length === 0; t++) {
+      await new Promise(r => setTimeout(r, 25));
+    }
+    expect(logs().some((m) => m.includes('逐条拒绝') && m.includes('2083'))).toBe(true);
+    // 好心跳照常入库
+    expect(server.getReceivedHeartbeats().map((h: any) => h.entity)).toContain('/path/ok.ts');
+    // 重试无效的那条不进缓存：否则一条坏心跳会永久占名额，把尾部好数据挤掉
+    const cache = new HeartbeatCache({ cache_limit: 100 });
+    expect(await cache.count()).toBe(0);
+  });
+
+  it('ignores a non-string api_key from the config layer and falls back to ~/.wakatime.cfg', async () => {
+    // 回归（线上事故根因）：loader 会把未求值的 `!!js` 节点原样交来，形状是
+    // 对象 `{ __jsExpr: '…' }`。对象是 truthy，旧实现 `let apiKey = config.api_key`
+    // 直接把它当成有效 key —— 既跳过 env / ~/.wakatime.cfg 两级兜底，又让
+    // Authorization 变成 base64("[object Object]:")。服务端恒 401，而 401 会写入
+    // authFailRetryAfter（5 分钟内跳过发送），心跳只进本地缓存并被 cache_limit
+    // 截断丢弃：用户看到的就是「WakaTime 上的时间凭空缺一整周」，日志零输出。
+    const cfgKey = 'waka_cfg_key_9999';
+    appendFileSync(join(process.env.HOME as string, '.wakatime.cfg'), `[settings]\napi_key = ${cfgKey}\n`);
+
+    const { ctx, emit } = makeFakeCtx();
+    const session = { id: 'key-fallback', header: { cwd: process.cwd() } };
+
+    apply(ctx as Context, {
+      api_key: { __jsExpr: "process.env.WAKATIME_API_KEY || ''" } as unknown as string,
+      api_url: server.getBaseUrl(),
+      heartbeat_interval_ms: 60000,
+      project_name: 'key-fallback-test', language: '',
+      include_tool_calls: true, include_user_messages: false, include_assistant_messages: false,
+      cache_heartbeats: true, cache_limit: 100, debug: false,
+    } as any);
+
+    emit('agent/status', { agent: { session }, status: 'running' });
+    emit('session/event', session, {
+      type: 'tool/call',
+      data: { turn: 1, step: 1, callId: 'c-1', name: 'read', arguments: JSON.stringify({ file_path: '/path/key-fallback.ts' }) },
+    });
+    emit('agent/status', { agent: { session }, status: 'idle' });
+
+    for (let t = 0; t < 200 && server.getReceivedHeartbeats().length === 0; t++) {
+      await new Promise(r => setTimeout(r, 25));
+    }
+    // 实际发出的凭据必须是回退链拿到的字符串 key，而不是 "[object Object]:"
+    expect(server.lastHeartbeatAuth).toBe(`Basic ${btoa(`${cfgKey}:`)}`);
+    expect(server.getReceivedHeartbeats()).toHaveLength(1);
+    expect(await new HeartbeatCache({ cache_limit: 100 }).count()).toBe(0);
+  });
+
+  it('keeps a working key when the settings document submits an unusable one', async () => {
+    const { ctx, emit, logs } = makeFakeCtx([{
+      ns: 'dsh-wakatime',
+      value: { api_key: { nested: 'object' }, include_tool_calls: true },
+    }]);
+    const session = { id: 'key-clobber', header: { cwd: process.cwd() } };
+
+    apply(ctx as Context, {
+      api_key: 'waka_good_key_0001',
+      api_url: server.getBaseUrl(),
+      heartbeat_interval_ms: 60000,
+      project_name: 'key-clobber-test', language: '',
+      include_tool_calls: true, include_user_messages: false, include_assistant_messages: false,
+      cache_heartbeats: true, cache_limit: 100, debug: false,
+    } as any);
+
+    emit('agent/status', { agent: { session }, status: 'running' });
+    emit('session/event', session, {
+      type: 'tool/call',
+      data: { turn: 1, step: 1, callId: 'c-1', name: 'read', arguments: JSON.stringify({ file_path: '/path/key-clobber.ts' }) },
+    });
+    emit('agent/status', { agent: { session }, status: 'idle' });
+
+    for (let t = 0; t < 200 && server.getReceivedHeartbeats().length === 0; t++) {
+      await new Promise(r => setTimeout(r, 25));
+    }
+    expect(server.lastHeartbeatAuth).toBe(`Basic ${btoa('waka_good_key_0001:')}`);
+    expect(logs().some((m) => m.includes('忽略不可用的 api_key'))).toBe(true);
   });
 
   it('should respect include_* toggles checked at event time', async () => {

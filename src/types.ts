@@ -135,3 +135,52 @@ export const EXTENSION_LANGUAGE_MAP: Record<string, string> = {
  * Maximum file size for diff calculation (lines)
  */
 export const MAX_DIFF_LINES = 10000;
+
+/**
+ * WakaTime 对心跳各字符串字段的长度上限。
+ *
+ * 全部是线上对 `/users/current/heartbeats.bulk` 逐条实测得到（不是文档值）：
+ * 超限或空串的条目会拿到逐条 400，而批量接口外层仍是 HTTP 202 —— 不裁剪就是
+ * 看不见、也不会重试的静默丢数据。
+ * - entity：`Field must be between 1 and 2083 characters long.`
+ * - project / branch：`Field must be between 1 and 1024 characters long.`
+ * - language / dependency：未触发过报错，按同档 1024 保守裁剪。
+ *
+ * 「between 1 and N」意味着**空串同样被拒**，所以这些字段要么给合法值、
+ * 要么整个不发（见 tracker 的写入处），不能图省事传 ''。
+ */
+export const HEARTBEAT_FIELD_LIMITS = {
+  entity: 2083,
+  project: 1024,
+  branch: 1024,
+  language: 1024,
+  dependency: 1024,
+} as const;
+
+/**
+ * 把任意来源的值裁剪进某个字段的长度上限。
+ *
+ * @param value - 原始值（非字符串一律视为「没给」）。
+ * @param max - 该字段上限，取自 {@link HEARTBEAT_FIELD_LIMITS}。
+ * @returns 去首尾空白后的值；超限时保留前缀并以 `...` 结尾，总长不超过 max；
+ *   空白或非字符串输入返回空串——调用方据此决定「不发这个字段」。
+ */
+export function clampField(value: unknown, max: number): string {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (trimmed === '') return '';
+  if (trimmed.length <= max) return trimmed;
+  // 预留 3 字符给省略号，保证结果恰好落在上限内。
+  return trimmed.slice(0, max - 3) + '...';
+}
+
+/**
+ * 把任意字符串裁剪成合法的 WakaTime entity。
+ *
+ * @param value - 原始 entity 候选。
+ * @returns 裁剪后的 entity；空白输入返回空串（空 entity 会被服务端 400 拒绝，
+ *   调用方必须丢弃这条心跳）。
+ */
+export function clampEntity(value: string): string {
+  return clampField(value, HEARTBEAT_FIELD_LIMITS.entity);
+}

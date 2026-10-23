@@ -4,6 +4,56 @@ import type { Socket } from 'node:net';
 /** 默认请求超时：挂起的服务端不能让 flush 永不返回、并发请求越积越多。 */
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 
+/**
+ * 单条心跳被服务端拒绝的记录。
+ *
+ * 存在的理由：`heartbeats.bulk` 是「整体 2xx + 逐条状态码」的协议——一条被拒时
+ * HTTP 状态仍是 202，只看 `response.ok` 会把 24/25 成功的批次和 0/25 成功的批次
+ * 判成同一件事。没有这个结构，任何逐条失败都是不可观测的。
+ */
+export interface RejectedHeartbeat {
+  /** 在该批次 payloads 中的下标，调用方据此把坏条目从重试集合里剔除。 */
+  index: number;
+  /** 该条目自己的状态码（201 之外即被拒）。 */
+  status: number;
+  /** 服务端给出的原因摘要，仅用于日志。 */
+  detail: string;
+  /** 400 之类的校验失败：同一条载荷重试也必然再失败，不该回写缓存。 */
+  permanent: boolean;
+}
+
+/** 一次批量上报的结果。 */
+export interface HeartbeatSendResult {
+  accepted: number;
+  rejected: RejectedHeartbeat[];
+}
+
+/**
+ * 把被拒条目的服务端返回压成一行日志摘要。
+ *
+ * WakaTime 的校验错误是 `{"errors": {字段: [原因,…]}}`，另有少数路径直接返回
+ * `{"error": "…"}`。这里两种都取，并把整条载荷序列化兜底——摘要只为让人
+ * 一眼看出「哪几个字段被拒、为什么」，不承担还原原始响应的责任。
+ *
+ * @param item - bulk 响应里该条目的结果对象。
+ * @returns 单行摘要（已截断）。
+ */
+function summarizeRejection(item: unknown): string {
+  const record = (item ?? {}) as { errors?: unknown; error?: unknown };
+  const limit = 200;
+  if (record.errors && typeof record.errors === 'object') {
+    return JSON.stringify(record.errors).slice(0, limit);
+  }
+  if (typeof record.error === 'string' && record.error) {
+    return record.error.slice(0, limit);
+  }
+  try {
+    return (JSON.stringify(item) ?? '').slice(0, limit);
+  } catch {
+    return String(item).slice(0, limit);
+  }
+}
+
 /** WakaTime HTTP 客户端配置 */
 export interface WakaTimeClientConfig {
   api_key: string;
@@ -44,12 +94,19 @@ export class WakaTimeClient {
     this.authFailRetryAfter = 0;
   }
 
-  async sendHeartbeat(payload: WakaTimeHeartbeat): Promise<void> {
-    await this.sendHeartbeats([payload]);
+  async sendHeartbeat(payload: WakaTimeHeartbeat): Promise<HeartbeatSendResult> {
+    return this.sendHeartbeats([payload]);
   }
 
-  async sendHeartbeats(payloads: WakaTimeHeartbeat[]): Promise<void> {
-    if (payloads.length === 0) return;
+  async sendHeartbeats(payloads: WakaTimeHeartbeat[]): Promise<HeartbeatSendResult> {
+    if (payloads.length === 0) return { accepted: 0, rejected: [] };
+
+    // 没有可用 key 就直说。放过去让服务端回 401 的话，一来错误会变成
+    // 「API Key 无效，请检查配置」（把「没配」伪装成「配错」），二来那次 401
+    // 会写入 authFailRetryAfter，之后 5 分钟的心跳全部只进本地缓存。
+    if (!this.apiKey) {
+      throw new WakaTimeAuthError('未配置 WakaTime API Key（配置层 / 环境变量 WAKATIME_API_KEY / ~/.wakatime.cfg 均无可用值）');
+    }
 
     // Check if we're in a retry-after period
     const now = Date.now();
@@ -107,6 +164,51 @@ export class WakaTimeClient {
     // Success - reset retry timers
     this.retryAfter = 0;
     this.authFailRetryAfter = 0;
+    return this.parseBulkResult(response, payloads.length);
+  }
+
+  /**
+   * 解析 heartbeats.bulk 的【逐条】结果。
+   *
+   * 该端点的契约是「外层 2xx + 内层逐条状态码」：
+   * `{"responses": [[{"data":{"id":"…"}}, 201], [{"errors":{"entity":["…"]}}, 400], …]}`，
+   * 整批被拒时外层依然是 202。只判 `response.ok` 会把 0/25 成功和 25/25 成功
+   * 读成同一件事——被拒的心跳既不重试也不留缓存，等于永久静默丢数据。
+   *
+   * 响应形状不认识时（网关改写、非 JSON、缺 responses）保守按「全部接受」处理：
+   * 宁可少报一次拒绝，也不把已经落库的数据当坏数据反复重投。
+   *
+   * @param response - 已确认外层 2xx 的响应（body 未被读过）。
+   * @param count - 本批 payloads 条数，用于把下标映射回心跳。
+   */
+  private async parseBulkResult(response: Response, count: number): Promise<HeartbeatSendResult> {
+    const acceptedAll = (): HeartbeatSendResult => ({ accepted: count, rejected: [] });
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      return acceptedAll();
+    }
+    const items = (body as { responses?: unknown } | null)?.responses;
+    if (!Array.isArray(items)) return acceptedAll();
+
+    const rejected: RejectedHeartbeat[] = [];
+    items.forEach((item, index) => {
+      // 每个条目是 [载荷结果, 该条状态码]；形状不符就跳过，不影响其余判定。
+      if (!Array.isArray(item) || index >= count) return;
+      const status = typeof item[1] === 'number' ? item[1] : undefined;
+      if (status === undefined || (status >= 200 && status < 300)) return;
+      rejected.push({
+        index,
+        status,
+        detail: summarizeRejection(item[0]),
+        // 4xx 校验类失败与传输状态无关，同一条载荷重试必然再失败；
+        // 429 例外——它只是限流，载荷本身没问题，该继续重试。
+        permanent: status >= 400 && status < 500 && status !== 429,
+      });
+    });
+
+    return { accepted: Math.max(count - rejected.length, 0), rejected };
   }
 
   /**

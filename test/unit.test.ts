@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { resolveLanguage } from '../src/language.js';
 import { resolveProject, resolveBranch, resolveProjectRootCount, resolveDependencies, readWakatimeCfgApiKey, maskApiKey, clearResolveCaches } from '../src/project.js';
 import { calculateWriteDiff, calculateEditDiff } from '../src/diff.js';
+import { clampEntity, clampField } from '../src/types.js';
 import { FileTracker } from '../src/tracker.js';
 import { secretSlotSet, SETTINGS_NAMESPACE_CANDIDATES } from '../src/client/mirror.js';
 import type { MirrorSnapshotLike } from '../src/client/mirror.js';
@@ -128,6 +129,40 @@ describe('diff.ts', () => {
       const newContent = 'new\n'.repeat(10001);
       const result = calculateEditDiff(oldContent, newContent);
       expect(result).toBeNull();
+    });
+  });
+});
+
+describe('types.ts field clamps', () => {
+  describe('clampField', () => {
+    it('truncates to the limit with an ellipsis marker', () => {
+      const out = clampField('x'.repeat(3000), 1024);
+      expect(out).toHaveLength(1024);
+      expect(out.endsWith('...')).toBe(true);
+    });
+
+    it('trims and passes through values already within the limit', () => {
+      expect(clampField('  apbot  ', 1024)).toBe('apbot');
+    });
+
+    it('treats blank input as absent (the server rejects empty strings)', () => {
+      // 服务端校验是 "between 1 and N"：空串会连累整条心跳被逐条 400 拒掉。
+      expect(clampField('   ', 1024)).toBe('');
+      expect(clampField('', 2083)).toBe('');
+    });
+
+    it('treats non-strings as absent instead of stringifying them', () => {
+      // loader 可能把未求值的 !!js 节点原样交来（对象）；`String(obj)` 会产出
+      // "[object Object]" 这种看起来合法、实际是垃圾的字段值。
+      expect(clampField({ a: 1 }, 1024)).toBe('');
+      expect(clampField(undefined, 1024)).toBe('');
+      expect(clampField(42, 1024)).toBe('');
+    });
+  });
+
+  describe('clampEntity', () => {
+    it('uses the entity limit (2083), not the general one', () => {
+      expect(clampEntity('y'.repeat(4000))).toHaveLength(2083);
     });
   });
 });

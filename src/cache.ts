@@ -60,8 +60,14 @@ export class HeartbeatCache {
 
   /**
    * Flush cached heartbeats to WakaTime.
-   * 并发调用会被串行化（后到的排队执行）；部分批次成功时只把未发送的
-   * 写回缓存，已发送的不重发。
+   * 并发调用会被串行化（后到的排队执行）。
+   *
+   * 只把【确实没落库】的条目留在缓存里：
+   * - 传输失败批次起点之后的全部；
+   * - 之前批次里被逐条拒绝、但重试有意的（429/5xx）。
+   * 被逐条 4xx 校验拒绝的条目重试必然再失败，直接丢弃——否则一条坏心跳会
+   * 永久占着缓存名额，把好数据从 enforceLimit 的尾部挤掉。
+   * 全部成功则清空文件；失败时抛出，让调用方记账。
    */
   flush(client: WakaTimeClient): Promise<void> {
     const run = this.flushChain.then(() => this.doFlush(client));
@@ -93,29 +99,40 @@ export class HeartbeatCache {
 
     // Send in batches of 25
     const batchSize = 25;
-    let sentCount = 0;
-    try {
-      for (let i = 0; i < heartbeats.length; i += batchSize) {
-        await client.sendHeartbeats(heartbeats.slice(i, i + batchSize));
-        sentCount = Math.min(i + batchSize, heartbeats.length);
+    /** 逐条被拒且可重试的条目（来自失败点之前的批次）。 */
+    const retryable: WakaTimeHeartbeat[] = [];
+    let failure: { at: number; error: unknown } | null = null;
+    for (let i = 0; i < heartbeats.length; i += batchSize) {
+      const batch = heartbeats.slice(i, i + batchSize);
+      let result;
+      try {
+        result = await client.sendHeartbeats(batch);
+      } catch (error) {
+        failure = { at: i, error };
+        break;
       }
-    } catch (error) {
-      if (sentCount > 0) {
-        // 部分成功：写回未发送的尾部；写回失败则保留全量文件
-        //（下次重发会重复已发部分，但宁可重复也不丢数据）
-        try {
-          const remaining = heartbeats.slice(sentCount)
-            .map(hb => JSON.stringify(hb) + '\n')
-            .join('');
-          await writeFile(this.cachePath, remaining);
-        } catch {
-          // 保留原文件内容
-        }
+      for (const rejected of result.rejected) {
+        const heartbeat = batch[rejected.index];
+        if (heartbeat && !rejected.permanent) retryable.push(heartbeat);
       }
-      throw error;
     }
 
-    await this.clear();
+    if (!failure) {
+      await this.clear();
+      return;
+    }
+
+    const remaining = [...heartbeats.slice(failure.at), ...retryable];
+    // 一条都没发出去（首批即失败且无逐条拒绝）时文件内容本就等于 remaining，
+    // 不必重写；其余情况写回真实剩余集合，避免把已落库的条目再发一遍。
+    if (remaining.length !== heartbeats.length) {
+      try {
+        await writeFile(this.cachePath, remaining.map(hb => JSON.stringify(hb) + '\n').join(''));
+      } catch {
+        // 写回失败则保留原文件内容：宁可重复已发部分，也不丢未发数据
+      }
+    }
+    throw failure.error;
   }
 
   private async enforceLimit(): Promise<void> {

@@ -10,6 +10,7 @@ import type {} from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-settings';
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session';
 import type { Agent, AgentStatus } from '@deepseek-ai/dsh-agent';
+import type { WakaTimeHeartbeat } from './types.js';
 import { WakaTimeClient } from './wakatime.js';
 import { FileTracker } from './tracker.js';
 import { HeartbeatCache } from './cache.js';
@@ -58,6 +59,44 @@ interface SessionState {
   timer: NodeJS.Timeout | null;
 }
 
+/**
+ * 把任意来源的 api_key 收成可用字符串：非字符串、空串、纯空白都算「没给」。
+ *
+ * 必须这样收窄而不是 `value || fallback`：loader 可能把未求值的 `!!js` 节点
+ * 原样交给插件（形状是对象），对象是 truthy，会被误当成有效 key 用掉，
+ * 结果 Authorization 变成 base64("[object Object]:")，服务端恒 401。
+ *
+ * @param value - 配置层/环境变量/配置文件的原始值。
+ * @returns 可直接用于 Basic 凭据的 key，不可用时为空串。
+ */
+function usableApiKey(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/** 该层是否【根本没提供】api_key（缺席/空值），用于区分「没给」与「给了但不可用」。 */
+function isAbsentApiKey(value: unknown): boolean {
+  return value === undefined || value === null || value === '';
+}
+
+/**
+ * 描述一个不可用取值的形状，供日志定位配置层问题。
+ *
+ * 只报类型与键名，绝不报值：这个槽位按 schema 声明是 secret，日志会被
+ * 转发到插件日志汇，摘要外泄就是凭据外泄。
+ *
+ * @param value - 被判定为不可用的原始值。
+ * @returns 一行形状摘要。
+ */
+function describeShape(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return `array(${value.length})`;
+  if (typeof value === 'object') {
+    const keys = Object.keys(value as Record<string, unknown>);
+    return `object{${keys.slice(0, 4).join(',')}${keys.length > 4 ? ',…' : ''}}`;
+  }
+  return `${typeof value}(${String(value).length})`;
+}
+
 // Maximum heartbeats per batch (WakaTime limit)
 const MAX_BATCH_SIZE = 25;
 
@@ -75,16 +114,31 @@ export function apply(ctx: Context, config: Config): void {
     ctx.logger.warn('dsh-wakatime: 检测到 dsh-codetime 已安装，二者都是 telemetry backend，建议只保留一个');
   }
 
-  // Resolve API key with priority:
+  // API key 解析优先级：
   // 1. Config from cordis.patch.yml (already resolved)
   // 2. Environment variable WAKATIME_API_KEY
   // 3. ~/.wakatime.cfg api_key
-  let apiKey = config.api_key;
-  if (!apiKey) {
-    apiKey = process.env.WAKATIME_API_KEY || '';
+  //
+  // 三层都必须【真的是非空字符串】才算命中。旧写法 `let apiKey = config.api_key`
+  // 只看 truthy：0.2.x 的 loader 会把未求值的 `!!js` 节点原样保留成
+  // `{ __jsExpr: '…' }` 这样的对象（dsh-settings 里的 isExpression() 就在处理
+  // 这种「整块保留」的节点），而对象是 truthy —— 于是它被当成有效 key，
+  // 既跳过了后面两级兜底，又让 Authorization 变成 base64("[object Object]:")。
+  // 服务端恒 401，而 401 会写 authFailRetryAfter（5 分钟内直接跳过发送），
+  // 心跳全部只进本地缓存、再被 cache_limit 截断丢弃：用户侧表现为
+  // 「WakaTime 上的时间凭空消失」，且旧代码在 debug 关闭时一个字都不打。
+  const rawConfigKey = (config as unknown as { api_key?: unknown }).api_key;
+  let apiKey = usableApiKey(rawConfigKey);
+  if (!apiKey && !isAbsentApiKey(rawConfigKey)) {
+    ctx.logger.warn(
+      `dsh-wakatime: 配置层给出的 api_key 不是可用字符串（${describeShape(rawConfigKey)}），已忽略该层并继续回退`,
+    );
   }
   if (!apiKey) {
-    apiKey = readWakatimeCfgApiKey();
+    apiKey = usableApiKey(process.env.WAKATIME_API_KEY);
+  }
+  if (!apiKey) {
+    apiKey = usableApiKey(readWakatimeCfgApiKey());
   }
 
   if (!apiKey) {
@@ -197,7 +251,22 @@ export function apply(ctx: Context, config: Config): void {
     // 逐个字段合并：undefined 表示「本次未提交该字段」，保留 runtime 现值。
     // api_key 尤其不能退化成 falsy 判断 —— 空串是合法用户输入，而 redacted
     // 字段是 undefined；两者语义不同，必须用 !== undefined 区分。
-    if (v.api_key !== undefined) runtime.api_key = v.api_key;
+    if (v.api_key !== undefined) {
+      const submitted = usableApiKey(v.api_key);
+      if (submitted) {
+        runtime.api_key = submitted;
+      } else if (isAbsentApiKey(v.api_key)) {
+        // 用户主动清空：回退到环境变量 / ~/.wakatime.cfg，而不是把上报打死。
+        runtime.api_key = usableApiKey(process.env.WAKATIME_API_KEY) || usableApiKey(readWakatimeCfgApiKey());
+        ctx.logger.info(`dsh-wakatime: api_key 已被清空，回退到 ${maskApiKey(runtime.api_key) || '无可用 key'}`);
+      } else {
+        // 非字符串（如 loader 交来的未求值 !!js 节点）：写进 runtime 就等于
+        // 用 base64("[object Object]:") 去鉴权，恒 401 且一次失败静默五天。
+        ctx.logger.warn(
+          `dsh-wakatime: 忽略不可用的 api_key 提交值（${describeShape(v.api_key)}），继续使用 ${maskApiKey(runtime.api_key)}`,
+        );
+      }
+    }
     if (v.api_url !== undefined) runtime.api_url = v.api_url;
     if (v.heartbeat_interval_ms !== undefined) runtime.heartbeat_interval_ms = v.heartbeat_interval_ms;
     if (v.project_name !== undefined) runtime.project_name = v.project_name;
@@ -307,27 +376,67 @@ export function apply(ctx: Context, config: Config): void {
       heartbeats = [...heartbeats, ...late];
     }
 
-    try {
-      for (let i = 0; i < heartbeats.length; i += MAX_BATCH_SIZE) {
-        const batch = heartbeats.slice(i, i + MAX_BATCH_SIZE);
-        await client.sendHeartbeats(batch);
+    // 逐批发送，并按「哪几条真的没落库」决定回写缓存的集合。
+    //
+    // 旧实现是 catch 里无条件 `appendBatch(heartbeats)`：一批 25 条发到第 3 批
+    // 失败时，前两批已经进库的心跳也被写回缓存，下次 flush 再发一遍——
+    // 服务端把重复心跳计入时长/token，用户看到的就是「数据翻倍」。
+    let accepted = 0;
+    /** 逐条被拒但载荷本身没问题的（429/5xx）：回缓存重试。 */
+    const retryable: WakaTimeHeartbeat[] = [];
+    /** 逐条被拒且重试必然再失败的（4xx 校验）：只能丢弃，但必须说出来。 */
+    let rejectedPermanent = 0;
+    let rejectionSample = '';
+    /** 传输层失败（含超时/限流抛出）：该批及其后的批次都算没落库。 */
+    let failure: { at: number; error: unknown } | null = null;
+
+    for (let i = 0; i < heartbeats.length; i += MAX_BATCH_SIZE) {
+      const batch = heartbeats.slice(i, i + MAX_BATCH_SIZE);
+      let result;
+      try {
+        result = await client.sendHeartbeats(batch);
+      } catch (error) {
+        failure = { at: i, error };
+        break;
       }
-      if (runtime.debug) {
-        ctx.logger.info(`dsh-wakatime: flushed ${heartbeats.length} heartbeats`);
+      accepted += result.accepted;
+      for (const rejected of result.rejected) {
+        const heartbeat = batch[rejected.index];
+        if (!heartbeat) continue;
+        if (rejected.permanent) {
+          rejectedPermanent++;
+          if (rejectionSample === '') rejectionSample = `${rejected.status}: ${rejected.detail}`;
+        } else {
+          retryable.push(heartbeat);
+        }
       }
-    } catch (error) {
-      if (runtime.debug) {
-        ctx.logger.warn(`dsh-wakatime: flush failed, caching ${heartbeats.length} heartbeats`);
-      }
-      if (runtime.cache_heartbeats) {
-        // Use appendBatch for better performance
+    }
+
+    // 未落库 = 失败批次起点之后的全部 + 之前各批里逐条被拒且可重试的。
+    const unpersisted = failure ? [...heartbeats.slice(failure.at), ...retryable] : retryable;
+
+    if (failure) {
+      // 无条件 warn（此前只在 debug 下打印，且不打原因）：上报路径一旦持续
+      // 失败，缓存会被 enforceLimit 截断成新 100 条，用户侧表现为「时间凭空缺失」，
+      // 而日志里一个字都没有——失败原因必须默认可见。
+      ctx.logger.warn(
+        `dsh-wakatime: 上报失败，${unpersisted.length} 条心跳转入缓存重试（本批 ${heartbeats.length} 条，已落库 ${accepted} 条）：${String(failure.error)}`,
+      );
+      if (runtime.cache_heartbeats && unpersisted.length > 0) {
         try {
-          await cache.appendBatch(heartbeats);
+          await cache.appendBatch(unpersisted);
         } catch (cacheError) {
           // 磁盘写失败也不能让 rejection 冒泡（fail-loud 会杀死整个 dsh 进程）
           ctx.logger.warn(`dsh-wakatime: failed to cache heartbeats: ${String(cacheError)}`);
         }
       }
+    } else if (rejectedPermanent > 0) {
+      // 逐条 400 的重试必然再失败，只能丢弃；丢弃必须说出来，否则就是静默丢数据。
+      ctx.logger.warn(
+        `dsh-wakatime: ${rejectedPermanent}/${heartbeats.length} 条心跳被 WakaTime 逐条拒绝并已丢弃（重试无效），样例 ${rejectionSample}`,
+      );
+    } else if (runtime.debug) {
+      ctx.logger.info(`dsh-wakatime: flushed ${accepted} heartbeats`);
     }
   };
 
