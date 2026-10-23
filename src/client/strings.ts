@@ -56,6 +56,11 @@ const zh = {
   showInSettingsHint: '在设置对话框中显示本插件的设置页（刷新页面后生效）',
   /** 数值越界校验（{min}/{max} 占位符） */
   invalidRange: '请填 {min}–{max} 的整数；留空表示使用默认值。',
+  /** 候选输入框（combobox）：下拉钮无障碍名 + 面板状态文案 */
+  comboAria: '显示候选列表',
+  comboLoading: '加载项目中…',
+  comboEmpty: '暂无候选项目（未配置密钥或网络不可达时仍可手动输入）。',
+  comboNoMatch: '无匹配的候选（可直接输入任意值）。',
 } as const;
 
 /** 单字段文案。 */
@@ -83,6 +88,10 @@ export interface WkStrings {
   readonly showInSettings: string;
   readonly showInSettingsHint: string;
   readonly invalidRange: string;
+  readonly comboAria: string;
+  readonly comboLoading: string;
+  readonly comboEmpty: string;
+  readonly comboNoMatch: string;
 }
 
 const en = {
@@ -117,6 +126,10 @@ const en = {
   showInSettings: 'Show in settings',
   showInSettingsHint: 'Show this plugin\'s settings page in the settings dialog (refresh to take effect)',
   invalidRange: 'Enter an integer from {min} to {max}, or leave blank to use the default.',
+  comboAria: 'Show options',
+  comboLoading: 'Loading projects…',
+  comboEmpty: 'No projects available (you can still type one in).',
+  comboNoMatch: 'No matching options (any value can be typed in).',
 } as const satisfies WkStrings;
 
 export type WkLocaleId = 'zh' | 'en';
