@@ -24,9 +24,10 @@ Track your AI-assisted coding activity and sync it to your [WakaTime](https://wa
 - **Batch sending** — sends up to 25 heartbeats per HTTP request (WakaTime limit)
 - **Request timeouts** — every HTTP request (10s) and git probe (5s) has a hard timeout, so a hanging endpoint can never stall flushing
 - **Inference caching** — project name / branch / dependencies are resolved once per working directory and cached for 60 seconds instead of spawning git on every tool call
-- **Safe cache flushes** — concurrent flushes are serialized; on partial failure only unsent heartbeats are written back (no duplicates, no data loss)
+- **Per-item visibility on batch sends** — `heartbeats.bulk` answers with an outer 2xx plus a status per heartbeat; the plugin inspects each one: 4xx validation failures are permanent (dropped, warned with the server's reason), 429/5xx go back to the cache for retry. String fields are pre-clamped to the server's hard limits (`entity` ≤ 2083, `project` / `branch` ≤ 1024; empty strings are rejected too, so such fields are simply omitted)
+- **Safe cache flushes** — concurrent flushes are serialized; only heartbeats that provably did not land are written back — nothing already stored is re-sent, and permanently invalid entries no longer hold cache slots
 - **Live settings** — all WebUI settings take effect immediately: toggles are checked per event, heartbeat interval changes rebuild timers in place
-- **Local caching** — caches failed heartbeats locally, retries on next successful send
+- **Local caching** — caches failed heartbeats locally, retries on next successful send; failures and drops are always warned with their reason, not only under debug mode
 - **WebUI configuration** — configure all settings from the WebUI settings panel (no need to edit config files)
 
 ## Compatibility
@@ -258,10 +259,41 @@ src/
 
 ### Heartbeats not sending
 
-1. Verify API Key is correct
-2. Check network connectivity to WakaTime
-3. Enable debug mode to see detailed logs
-4. Check `~/.dsh/wakatime/heartbeat-cache.jsonl` for cached heartbeats
+1. **Look at the local cache before the logs.** `~/.dsh/wakatime/heartbeat-cache.jsonl`
+   is only written when sending fails and is drained when sending succeeds. If it sits
+   pinned at the Cache Limit, sending is failing continuously — and the oldest heartbeats
+   are being trimmed away, so that activity is already unrecoverable.
+2. **Read the warnings; debug is not required.** Failures are always warned with a reason:
+   `上报失败…` (transport / auth / rate limit), `N/M 条心跳被 WakaTime 逐条拒绝并已丢弃…`
+   (invalid payload), `cache flush failed…` (the backfill cannot send either).
+   Note that some hosts do not forward `ctx.logger` output to the captured stdout —
+   where plugin logs land is host behaviour.
+3. **Confirm this key actually works.** The "Project name" dropdown in the settings page
+   uses the same key: empty candidates plus an `error` means a key or connectivity problem
+   (`API Key 无效` = the server returned 401; `未配置 WakaTime API Key` = none of the three
+   sources has a usable value). Resolution order is config layer → `WAKATIME_API_KEY` →
+   `~/.wakatime.cfg`, and all three only accept a **non-empty string**: a wrong shape
+   (e.g. an unevaluated `!!js` node handed over as an object) is ignored, falls through,
+   and is warned with a shape summary.
+4. **Check connectivity to WakaTime.** The plugin honours the `HTTPS_PROXY` / `HTTP_PROXY`
+   environment variables only — it does not read `proxy` from `~/.wakatime.cfg`.
+5. **If behaviour does not match the code, check the build fingerprint.** The log line
+   `apply called; artifact mtime=… pid=…` says exactly which build this process loaded.
+   Hot reload can leave old fibers still sending with pre-fix code — restart DSH fully.
+6. **Payload lengths are hard-validated.** `entity` ≤ 2083, `project` / `branch` ≤ 1024,
+   and empty strings are rejected as well. The plugin clamps before sending; a clamped
+   `entity` ends with `...`. If per-item rejections still appear, some field is outside the
+   clamping coverage — paste the server reason from the warning into an issue.
+
+### Known boundary: every shell command is counted as building
+
+`bash` / `pwsh` tool calls are always reported as `type=app`, `category=building`,
+`language=Shell`, with the whole command line as `entity`. Sessions that lean on the shell
+therefore have their "coding time" systematically counted as "building", their language
+breakdown dominated by Shell, and every distinct command becoming its own entity
+(cardinality explosion). The official wakatime-cli classifies only actual build/test
+commands as building. Changing this affects comparability with historical data, so it is
+not addressed here.
 
 ## License
 
