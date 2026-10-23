@@ -28,8 +28,8 @@ import type { WkFieldKey, WkSectionId, WkStrings } from './strings.ts';
 import { format } from './strings.ts';
 import { useWkT, type LocaleFaceLike } from './useWkT.ts';
 
-/** 字段输入形态（spec 工厂按此分派，见 field-specs.ts）。 */
-export type FieldKind = 'number' | 'text' | 'boolean' | 'secret';
+/** 字段输入形态（spec 工厂按此分派，见 field-specs.ts；仅本文件消费）。 */
+type FieldKind = 'number' | 'text' | 'boolean' | 'secret';
 
 /** 配置字段定义（key / 输入形态 / 所属分组 id）；label/hint 经字典按 key 解析。 */
 export const WAKATIME_FIELDS: ReadonlyArray<{
@@ -56,8 +56,8 @@ export const WAKATIME_FIELDS: ReadonlyArray<{
   { key: 'debug', kind: 'boolean', section: 'cacheDebug' },
 ];
 
-/** 分组渲染顺序（标题文案经字典 sections 表解析）。 */
-export const SECTIONS: ReadonlyArray<WkSectionId> = ['api', 'tracking', 'cacheDebug'];
+/** 分组渲染顺序（标题文案经字典 sections 表解析；仅本文件消费）。 */
+const SECTIONS: ReadonlyArray<WkSectionId> = ['api', 'tracking', 'cacheDebug'];
 
 /**
  * 卡片的可观察投影：表单壳状态 + 每个字段的草稿状态 + 密钥配置状态。
