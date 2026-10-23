@@ -6,6 +6,7 @@ import { FileTracker } from '../src/tracker.js';
 import { secretSlotSet, SETTINGS_NAMESPACE_CANDIDATES } from '../src/client/mirror.js';
 import type { MirrorSnapshotLike } from '../src/client/mirror.js';
 import { booleanField, numberField, textField } from '../src/client/field-specs.js';
+import { createProjectsHandler } from '../src/projects-route.js';
 import { wkDicts } from '../src/client/strings.js';
 import { existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -422,6 +423,58 @@ describe('client/field-specs.ts', () => {
       expect(spec.parse('')).toBeUndefined();
       expect(spec.parse('1')).toBeUndefined();
     });
+  });
+});
+
+describe('projects-route.ts', () => {
+  /** 假 ServerResponse：收集 end 的负载供断言。 */
+  const fakeRes = (): { res: any; payload: () => unknown } => {
+    const chunks: string[] = [];
+    return {
+      res: {
+        setHeader: () => undefined,
+        end: (chunk?: string) => { if (typeof chunk === 'string') chunks.push(chunk); },
+      },
+      payload: () => JSON.parse(chunks.join('')),
+    };
+  };
+
+  it('should serve from cache within the window (one upstream call)', async () => {
+    let calls = 0;
+    const { handler } = createProjectsHandler(async () => { calls++; return ['a', 'b']; }, 60_000);
+    const first = fakeRes();
+    const second = fakeRes();
+    await handler({} as any, first.res);
+    await handler({} as any, second.res);
+    expect(calls).toBe(1);
+    expect(first.payload()).toEqual({ projects: ['a', 'b'] });
+    expect(second.payload()).toEqual({ projects: ['a', 'b'] });
+  });
+
+  it('should refetch after the cache window expires', async () => {
+    let calls = 0;
+    const { handler } = createProjectsHandler(async () => { calls++; return [`r${calls}`]; }, 0);
+    await handler({} as any, fakeRes().res);
+    const last = fakeRes();
+    await handler({} as any, last.res);
+    expect(calls).toBe(2);
+    expect(last.payload()).toEqual({ projects: ['r2'] });
+  });
+
+  it('should degrade to an empty list with the reason and not cache failures', async () => {
+    let calls = 0;
+    const { handler } = createProjectsHandler(async () => {
+      calls++;
+      if (calls === 1) throw new Error('WakaTime API Key 无效');
+      return ['recovered'];
+    }, 60_000);
+    const failed = fakeRes();
+    await handler({} as any, failed.res);
+    expect(failed.payload()).toEqual({ projects: [], error: 'WakaTime API Key 无效' });
+    // 失败不留缓存：网络/密钥恢复后下一次点开即成功
+    const ok = fakeRes();
+    await handler({} as any, ok.res);
+    expect(ok.payload()).toEqual({ projects: ['recovered'] });
   });
 });
 

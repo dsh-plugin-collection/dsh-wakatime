@@ -14,6 +14,7 @@ import { WakaTimeClient } from './wakatime.js';
 import { FileTracker } from './tracker.js';
 import { HeartbeatCache } from './cache.js';
 import { readWakatimeCfgApiKey, maskApiKey } from './project.js';
+import { createProjectsHandler } from './projects-route.js';
 
 export const name = 'dsh-wakatime';
 export const inject = ['sessions'];
@@ -102,6 +103,41 @@ export function apply(ctx: Context, config: Config): void {
 
   const client = new WakaTimeClient(runtime);
   const cache = new HeartbeatCache(runtime);
+
+  // —— 设置页「项目名称」候选：/api/dsh-wakatime/projects ——
+  // client 拿不到 api_key（settings 线路对 secret 全程脱敏），由 host 代理
+  // WakaTime 的 projects API。60s 内存缓存挡住反复开合下拉的上游请求；失败
+  // 返回空列表 + 原因（200 而非 4xx：候选缺席不是资源错误），client 据此退化
+  // 为自由输入。
+  //
+  // 必须用 ctx.inject 访问可选的 webServer 服务（与本文件访问 settings 同一
+  // 模式）：直接读 `ctx.webServer` 会撞上 cordis 的 inject 门控——未在顶层
+  // inject 声明的服务属性访问会抛错，让插件在【任何】宿主上整个 apply 失败。
+  // 注册再套一层 try：热重载偶发同路径重复注册抛错时，也只丢候选，不拖垮插件。
+  try {
+    ctx.inject(['webServer'], (webCtx: Context) => {
+      const webServer = (webCtx as unknown as {
+        webServer?: {
+          register(route: {
+            kind: 'exact';
+            path: string;
+            handler: (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => void | Promise<void>;
+          }): () => void;
+        };
+      }).webServer;
+      if (webServer === undefined) return;
+      const { handler } = createProjectsHandler(() => client.fetchProjects());
+      const offRoute = webServer.register({
+        kind: 'exact',
+        path: '/api/dsh-wakatime/projects',
+        handler,
+      });
+      webCtx.effect(() => () => { offRoute(); });
+    });
+  } catch (error) {
+    ctx.logger.warn(`dsh-wakatime: 项目候选路由未注册（下拉退化为自由输入）：${(error as Error)?.message ?? error}`);
+  }
+
   
   // Use WeakMap for session states as specified in PRD
   const states = new WeakMap<Session, SessionState>();
