@@ -38,7 +38,7 @@ const zh = {
   },
   /** 固定 chrome 文案 */
   overridden: '已覆盖',
-  reset: '重置',
+  reset: '恢复默认',
   configured: '已配置',
   notConfigured: '未配置',
   // 0.2.1 起 dsh-client-ui-settings 移除了 memory 持久化模式（ConfigFormSnapshot
@@ -106,7 +106,7 @@ const en = {
     debug: { label: 'Debug mode', hint: 'Log verbose output to the DSH console' },
   },
   overridden: 'Overridden',
-  reset: 'Reset',
+  reset: 'Reset to default',
   configured: 'Configured',
   notConfigured: 'Not configured',
   readOnlyNote: 'This deployment stores settings read-only.',
