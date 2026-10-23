@@ -207,23 +207,84 @@ describe('Integration Tests', () => {
     });
 
     it('clamps the entity to the server-side 2083-character cap', async () => {
-      // 回归背景：bash 的 entity 是整条命令原文。线上实测超长 entity 会被
-      // heartbeats.bulk 逐条 400 拒掉（外层仍是 202），旧实现看不见也重试不了，
-      // 等于把这类心跳静默丢掉。
+      // 线上实测：超长 entity 被 heartbeats.bulk 逐条 400 拒掉（外层仍是 202），
+      // 旧实现看不见也重试不了，等于静默丢数据。bash 侧现在根本不再用命令原文
+      // 当 entity（见下方 app_entity 用例），所以这里改用文件路径这条轴验证裁剪。
       const mockSession = { id: 'test-session', header: { cwd: process.cwd() } };
       const tracker = new FileTracker(mockSession as any, { project_name: '', language: '' });
-      const longCommand = `python3 - <<'EOF'\n${'x'.repeat(5000)}\nEOF`;
+      const longPath = `/tmp/${'d'.repeat(5000)}/x.ts`;
 
       await tracker.trackToolCall({
         type: 'tool/call',
-        data: { turn: 1, step: 1, callId: 'call-long', name: 'bash', arguments: JSON.stringify({ command: longCommand }) },
+        data: { turn: 1, step: 1, callId: 'call-long', name: 'read', arguments: JSON.stringify({ file_path: longPath }) },
       } as any);
 
       const [heartbeat] = tracker.getPending();
       expect(heartbeat.entity.length).toBeLessThanOrEqual(2083);
       // 裁剪保留前缀，仍然可作为可辨识的 entity；尾部是省略号标记。
-      expect(heartbeat.entity.startsWith('python3 - <<')).toBe(true);
+      expect(heartbeat.entity.startsWith('/tmp/ddd')).toBe(true);
       expect(heartbeat.entity.endsWith('...')).toBe(true);
+    });
+
+    describe('app_entity (命令心跳的 entity)', () => {
+      const session = { id: 'app-entity-session', header: { cwd: process.cwd() } };
+      const bashCall = (command: string, step = 1) => ({
+        type: 'tool/call',
+        data: { turn: 1, step, callId: `c-${step}-${command.length}`, name: 'bash', arguments: JSON.stringify({ command }) },
+      });
+
+      it('defaults to Terminal and never carries the command line', async () => {
+        const tracker = new FileTracker(session as any, { project_name: 'app-test', language: '' });
+        await tracker.trackToolCall(bashCall(`python3 - <<'EOF'\n${'x'.repeat(5000)}\nEOF`) as any);
+
+        const [heartbeat] = tracker.getPending();
+        expect(heartbeat.entity).toBe('Terminal');
+        expect(heartbeat.type).toBe('app');
+        // 命令内容不再进 entity，但仍由 category 表达
+        expect(heartbeat.category).toBe('coding');
+      });
+
+      it('honours a configured app name and falls back when it is blank', async () => {
+        const named = new FileTracker(session as any, { project_name: 'app-test', app_entity: 'DSH' });
+        await named.trackToolCall(bashCall('ls -la') as any);
+        expect(named.getPending()[0].entity).toBe('DSH');
+
+        // 空白设置不能让 entity 变成空串：空 entity 会被服务端逐条 400 拒收。
+        const blank = new FileTracker(session as any, { project_name: 'app-test', app_entity: '   ' });
+        await blank.trackToolCall(bashCall('ls -la') as any);
+        expect(blank.getPending()[0].entity).toBe('Terminal');
+      });
+
+      it('clamps an over-long configured app name', async () => {
+        const tracker = new FileTracker(session as any, { project_name: 'app-test', app_entity: 'A'.repeat(4000) });
+        await tracker.trackToolCall(bashCall('ls -la') as any);
+        expect(tracker.getPending()[0].entity).toHaveLength(2083);
+      });
+
+      it('does not let consecutive commands within 5s overwrite each other', async () => {
+        // 回归：pending 缓冲原先以 entity 为键。所有 shell 心跳共用应用名之后，
+        // 若仍按 entity 作键，5 秒窗口内 `pnpm test` 会被随后一条 `ls` 覆盖掉
+        // ——类别、时间戳被改写，跑测试这条活动直接消失。
+        const tracker = new FileTracker(session as any, { project_name: 'app-test', language: '' });
+        await tracker.trackToolCall(bashCall('cd /repo && pnpm test', 1) as any);
+        await tracker.trackToolCall(bashCall('ls -la /repo', 2) as any);
+        await tracker.trackToolCall(bashCall('git status', 3) as any);
+
+        const pending = tracker.getPending();
+        expect(pending).toHaveLength(3);
+        expect(pending.every((hb) => hb.entity === 'Terminal')).toBe(true);
+        expect(pending.map((hb) => hb.category).sort()).toEqual(['browsing', 'coding', 'running tests']);
+      });
+
+      it('still merges repeats of the same entity and category within 5s', async () => {
+        // 上面那条不能变成「不再合并」：同一 entity + 同一类别的重复调用仍应
+        // 折叠成一条，与 WakaTime 服务端的 5 秒去重窗口保持一致。
+        const tracker = new FileTracker(session as any, { project_name: 'app-test', language: '' });
+        await tracker.trackToolCall(bashCall('ls -la /a', 1) as any);
+        await tracker.trackToolCall(bashCall('ls -la /b', 2) as any);
+
+        expect(tracker.getPending()).toHaveLength(1);
+      });
     });
 
     it('keeps every string field inside the server-side limits', async () => {
@@ -282,9 +343,11 @@ describe('Integration Tests', () => {
           data: { turn: 1, step: index, callId: `c-${index}`, name: 'bash', arguments: JSON.stringify({ command }) },
         } as any);
       }
-      for (const [command, expected] of cases) {
-        expect(tracker.getPending().find((hb) => hb.entity === command)?.category).toBe(expected);
-      }
+      // entity 已收敛成应用名，三条心跳只能靠 category 区分；断言三条都在、
+      // 且各自的类别来自命令判定（缓冲键含 category 才不会互相覆盖，见 app_entity 用例）
+      expect(tracker.getPending().map((hb) => hb.category).sort())
+        .toEqual(cases.map(([, expected]) => expected).sort());
+      expect(tracker.getPending().every((hb) => hb.entity === 'Terminal')).toBe(true);
 
       // 非 shell 工具仍走静态映射，未被误改
       await tracker.trackToolCall({

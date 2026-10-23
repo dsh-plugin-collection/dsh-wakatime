@@ -32,6 +32,12 @@ export interface Config {
   heartbeat_interval_ms: number;
   project_name: string;
   language: string;
+  /**
+   * shell / 会话类心跳（`type: 'app'`）上报的 entity —— 即「这次活动发生在哪个应用上」。
+   * 默认 `Terminal`，对齐 wakatime-cli 对 app 类型 entity 的定义（应用名，不是命令行）。
+   * 空白值按默认值处理：entity 为空会被服务端逐条 400 拒收（校验是 "between 1 and 2083"）。
+   */
+  app_entity: string;
   include_tool_calls: boolean;
   include_user_messages: boolean;
   include_assistant_messages: boolean;
@@ -46,6 +52,7 @@ export const Config = Schema.object({
   heartbeat_interval_ms: Schema.natural().min(60000).max(300000).default(120000).volatile(),
   project_name: Schema.string().default('').volatile(),
   language: Schema.string().default('').volatile(),
+  app_entity: Schema.string().default('Terminal').volatile(),
   include_tool_calls: Schema.boolean().default(true).volatile(),
   include_user_messages: Schema.boolean().default(false).volatile(),
   include_assistant_messages: Schema.boolean().default(false).volatile(),
@@ -271,6 +278,7 @@ export function apply(ctx: Context, config: Config): void {
     if (v.heartbeat_interval_ms !== undefined) runtime.heartbeat_interval_ms = v.heartbeat_interval_ms;
     if (v.project_name !== undefined) runtime.project_name = v.project_name;
     if (v.language !== undefined) runtime.language = v.language;
+    if (v.app_entity !== undefined) runtime.app_entity = v.app_entity;
     if (v.include_tool_calls !== undefined) runtime.include_tool_calls = v.include_tool_calls;
     if (v.include_user_messages !== undefined) runtime.include_user_messages = v.include_user_messages;
     if (v.include_assistant_messages !== undefined) runtime.include_assistant_messages = v.include_assistant_messages;
