@@ -3,8 +3,9 @@ import { resolveLanguage } from '../src/language.js';
 import { resolveProject, resolveBranch, resolveProjectRootCount, resolveDependencies, readWakatimeCfgApiKey, maskApiKey, clearResolveCaches } from '../src/project.js';
 import { calculateWriteDiff, calculateEditDiff } from '../src/diff.js';
 import { FileTracker } from '../src/tracker.js';
-import { fieldLanded, saveFailureOf, secretSlotSet, writeAccepted, SETTINGS_NAMESPACE_CANDIDATES } from '../src/client/mirror.js';
+import { secretSlotSet, SETTINGS_NAMESPACE_CANDIDATES } from '../src/client/mirror.js';
 import type { MirrorSnapshotLike } from '../src/client/mirror.js';
+import { booleanField, numberField, textField } from '../src/client/field-specs.js';
 import { wkDicts } from '../src/client/strings.js';
 import { existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -341,51 +342,7 @@ describe('client/mirror.ts', () => {
     });
   });
 
-  describe('writeAccepted', () => {
-    it('should unwrap both host shapes into the acceptance boolean', () => {
-      // ConfigForm.set/unset/mutate 直接给 boolean（自 0.2.0 起，拒绝不抛异常）
-      expect(writeAccepted(true)).toBe(true);
-      expect(writeAccepted(false)).toBe(false);
-      // 裸线 remote.settings.mutate 给 RemoteResult 信封，受理位在 ok 上
-      expect(writeAccepted({ ok: true, value: { ns: 'dsh-wakatime', revision: 3 } })).toBe(true);
-      expect(writeAccepted({ ok: false, error: { code: 'conflict' } })).toBe(false);
-      // 非 true 的 ok 算未受理；无判别信息的 resolve（更老宿主用抛异常表达失败）算受理
-      expect(writeAccepted({ ok: undefined })).toBe(false);
-      expect(writeAccepted(undefined)).toBe(true);
-    });
-  });
 
-  describe('saveFailureOf', () => {
-    it('should keep acceptance and landing as two independent judgements', () => {
-      expect(saveFailureOf(false, true)).toBe(null);
-      // 受理了但回读没落地 → notLanded（既有判定，不被新判定覆盖）
-      expect(saveFailureOf(false, false)).toBe('notLanded');
-      // 被拒是更靠前的因；即使回读恰好显示一致也不谎报成功
-      expect(saveFailureOf(true, false)).toBe('refused');
-      expect(saveFailureOf(true, true)).toBe('refused');
-    });
-
-    it('should map each failure cause to its own distinct copy', () => {
-      // 渲染层按成因取键（settings-card 的 footer）：refused → saveRefused，
-      // notLanded → saveFailed。两种失败必须能肉眼区分——只改取值和重试是两个
-      // 不同的用户动作，共用一句话会让用户无从判断下一步该做什么。
-      const keyFor = (f: NonNullable<ReturnType<typeof saveFailureOf>>): 'saveRefused' | 'saveFailed' =>
-        f === 'refused' ? 'saveRefused' : 'saveFailed';
-
-      // 两个成因不得落到同一个键上
-      expect(keyFor(saveFailureOf(true, false))).not.toBe(keyFor(saveFailureOf(false, false)));
-
-      const refusedKey = keyFor(saveFailureOf(true, false));
-      const notLandedKey = keyFor(saveFailureOf(false, false));
-      for (const locale of ['zh', 'en'] as const) {
-        const d = wkDicts[locale];
-        expect(d[refusedKey]).not.toBe(d[notLandedKey]);
-        // 键确实存在且非空（防止有人只补一侧字典或留空串）
-        expect(d[refusedKey].length).toBeGreaterThan(0);
-        expect(d[notLandedKey].length).toBeGreaterThan(0);
-      }
-    });
-  });
 
   describe('wkDicts', () => {
     it('should keep zh and en key sets identical', () => {
@@ -393,35 +350,77 @@ describe('client/mirror.ts', () => {
       //（数组/对象嵌套，或有人绕过类型断言塞进不一致的字典）。
       expect(Object.keys(wkDicts.en).sort()).toEqual(Object.keys(wkDicts.zh).sort());
       expect(Object.keys(wkDicts.en.fields).sort()).toEqual(Object.keys(wkDicts.zh.fields).sort());
+      expect(Object.keys(wkDicts.en.sections).sort()).toEqual(Object.keys(wkDicts.zh.sections).sort());
+      // SettingsForm 外框文案必须齐备（官方 labels 五个键一个都不能缺）。
+      for (const key of ['unavailable', 'readOnlyNote', 'saveFailed', 'save', 'saving'] as const) {
+        expect(wkDicts.zh[key].length).toBeGreaterThan(0);
+        expect(wkDicts.en[key].length).toBeGreaterThan(0);
+      }
     });
 
-    it('should give the save-failure pair different copy in both locales', () => {
-      // 本用例是 issue #11 遗留的直接回归守卫：这两个键曾经共用一句
-      //「保存未落地」，肉眼分不出「Host 未受理」与「受理了但未落地」。
-      for (const locale of ['zh', 'en'] as const) {
-        const d = wkDicts[locale];
-        expect(d.saveRefused).not.toBe(d.saveFailed);
-      }
+  });
+
+});
+
+describe('client/field-specs.ts', () => {
+  describe('textField', () => {
+    it('should clear on blank draft and store the raw text otherwise', () => {
+      const spec = textField('api_url');
+      expect(spec.parse('')).toEqual({ kind: 'clear' });
+      expect(spec.parse('   ')).toEqual({ kind: 'clear' });
+      expect(spec.parse('https://example.com')).toEqual({ kind: 'set', value: 'https://example.com' });
+      // 草稿保真：官方控件不改写用户输入（首尾空格照存）
+      expect(spec.parse(' x ')).toEqual({ kind: 'set', value: ' x ' });
+    });
+
+    it('should format stored scalars for the draft, empty for absent', () => {
+      const spec = textField('project_name');
+      expect(spec.format(undefined)).toBe('');
+      expect(spec.format(null)).toBe('');
+      expect(spec.format('dsh')).toBe('dsh');
     });
   });
 
-  describe('fieldLanded', () => {
-    it('should judge secrets solely by the mirror slot (wire redacts secret values)', () => {
-      // 线路脱敏：value/user 里永远看不到密钥，但槽位 set=true 即落地
-      expect(fieldLanded('api_key', 'secret', 'waka_key', {}, { api_key: '' }, true)).toBe(true);
-      // 写入失败（镜像槽位仍 unset）即未落地，即使解析层残留旧值
-      expect(fieldLanded('api_key', 'secret', 'waka_key', {}, { api_key: '' }, false)).toBe(false);
+  describe('numberField', () => {
+    const spec = numberField('heartbeat_interval_ms', 60000, 300000);
+
+    it('should accept in-range integers and clear on blank', () => {
+      expect(spec.parse('90000')).toEqual({ kind: 'set', value: 90000 });
+      expect(spec.parse('60000')).toEqual({ kind: 'set', value: 60000 });
+      expect(spec.parse('300000')).toEqual({ kind: 'set', value: 300000 });
+      expect(spec.parse('')).toEqual({ kind: 'clear' });
     });
 
-    it('should compare against the user layer for plain fields', () => {
-      expect(fieldLanded('debug', 'boolean', true, { debug: true }, { debug: true }, false)).toBe(true);
-      expect(fieldLanded('debug', 'boolean', true, { debug: false }, { debug: false }, false)).toBe(false);
-      expect(fieldLanded('heartbeat_interval_ms', 'number', 90000, { heartbeat_interval_ms: 90000 }, {}, false)).toBe(true);
+    it('should reject non-integers and out-of-range drafts (undefined blocks the save)', () => {
+      expect(spec.parse('abc')).toBeUndefined();
+      expect(spec.parse('1.5')).toBeUndefined();
+      expect(spec.parse('59999')).toBeUndefined();
+      expect(spec.parse('300001')).toBeUndefined();
     });
 
-    it('should fall back to the resolved value when absent from the user layer', () => {
-      expect(fieldLanded('api_url', 'text', 'https://wakatime.com', {}, { api_url: 'https://wakatime.com' }, false)).toBe(true);
-      expect(fieldLanded('api_url', 'text', 'https://example.com', {}, { api_url: 'https://wakatime.com' }, false)).toBe(false);
+    it('should skip bounds when the field declares none', () => {
+      const loose = numberField('cache_limit');
+      expect(loose.parse('-42')).toEqual({ kind: 'set', value: -42 });
+    });
+  });
+
+  describe('booleanField', () => {
+    const spec = booleanField('debug');
+
+    it('should treat only explicit true as on (absent/other values render off)', () => {
+      expect(spec.format(true)).toBe('true');
+      expect(spec.format('true')).toBe('true');
+      expect(spec.format(undefined)).toBe('false');
+      expect(spec.format(false)).toBe('false');
+      expect(spec.format('anything-else')).toBe('false');
+    });
+
+    it('should round-trip the two switch literals and reject everything else', () => {
+      expect(spec.parse('true')).toEqual({ kind: 'set', value: true });
+      expect(spec.parse('false')).toEqual({ kind: 'set', value: false });
+      // Switch 只会 stage 这两个字面量；手写的空串/其他值都是非法草稿
+      expect(spec.parse('')).toBeUndefined();
+      expect(spec.parse('1')).toBeUndefined();
     });
   });
 });
