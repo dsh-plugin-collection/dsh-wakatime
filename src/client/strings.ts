@@ -4,14 +4,15 @@
  * 语言解析：`useWkT(locale)` 读取宿主 locale 服务的 active id（zh/en），
  * 从这里取对应字典；locale 服务缺失或 id 未收录时回退中文（v1 默认语言）。
  * 字段定义（WAKATIME_FIELDS）只存 key/形态/分组 id，label/hint 一律经
- * `t.fields[key]` 解析，保证 zh/en 键集一致（由 en 的映射类型强制）。
+ * `t.fields[key]` 解析；zh/en 键集一致由 `satisfies WkStrings` 在编译期强制，
+ * 单测再从运行时兜一层嵌套形态一致。
+ *
+ * 表单外框文案（unavailable/readOnly/saveFailed/save/saving）交给官方
+ * `SettingsForm` 渲染，措辞对齐官方网页搜索插件；旧「Host 未受理 / 受理了
+ * 但未落地」两条成因文案与「放弃」按钮随官方外框一并归一（官方只在保存
+ * 失败时给一条留稿提示，离开页面自动丢稿，无独立放弃控件）。
  * @module dsh-wakatime/client/strings
  */
-
-export type WkLocaleId = 'zh' | 'en';
-
-/** 设置卡片的分组 id（FIELDS.section 取值；显示文案在字典的 sections 表）。 */
-export type WkSectionId = 'api' | 'tracking' | 'cacheDebug' | 'display';
 
 const zh = {
   /** 分组标题 */
@@ -40,27 +41,51 @@ const zh = {
   reset: '重置',
   configured: '已配置',
   notConfigured: '未配置',
-  // 原括注「（内存模式）」已删：0.2.1 起 dsh-client-ui-settings 移除了 memory 持久化
-  // 模式（ConfigFormSnapshot 不再有 mode 字段），这句现在是错的。不可写的真因是宿主
-  // 判定文档不可写（view.writable === false），与"内存"无关。
-  readOnlyNote: '当前部署不可写',
-  /** 保存失败成因之一（SaveFailure='refused'）：Host 明确未受理本次写入 */
-  saveRefused: 'Host 拒绝了本次写入，请检查取值是否合法',
-  /** 保存失败成因之二（SaveFailure='notLanded'）：Host 受理了，但回读没看到真值 */
-  saveFailed: '已受理但未落地，请检查后重试',
-  discard: '放弃修改',
+  // 0.2.1 起 dsh-client-ui-settings 移除了 memory 持久化模式（ConfigFormSnapshot
+  // 不再有 mode 字段），旧括注「（内存模式）」是错的。不可写的真因是宿主判定
+  // 文档不可写（view.writable === false）。
+  readOnlyNote: '本部署的设置为只读。',
+  /** 命名空间未被宿主服务（插件未加载）时官方外框的替代文案 */
+  unavailable: '该插件当前未加载，暂时无法配置。',
+  /** 保存失败：官方统一文案——Host 未受理时草稿原样保留 */
+  saveFailed: '本部署没有接受这些值，已保留供你修改。',
   save: '保存',
   saving: '保存中…',
   /** 「在设置中显示」开关文案（仅详情页显示） */
   showInSettings: '在设置中显示',
   showInSettingsHint: '在设置对话框中显示本插件的设置页（刷新页面后生效）',
-  /** 帮助按钮 aria-label 模板（{field} 占位符） */
-  helpAriaLabel: '{field}说明',
   /** 数值越界校验（{min}/{max} 占位符） */
-  invalidRange: '需为 {min}–{max} 的整数',
+  invalidRange: '请填 {min}–{max} 的整数；留空表示使用默认值。',
 } as const;
 
-const en: { [K in keyof typeof zh]: string } = {
+/** 单字段文案。 */
+export type WkFieldCopy = { readonly label: string; readonly hint: string };
+
+/** 字段 key 联合（WAKATIME_FIELDS.key 的合法取值）。 */
+export type WkFieldKey = keyof typeof zh.fields;
+
+/** 设置卡片的分组 id（FIELDS.section 取值；显示文案在字典的 sections 表）。 */
+export type WkSectionId = keyof typeof zh.sections;
+
+/** 单语言文案字典类型（zh/en 必须同形）。 */
+export interface WkStrings {
+  readonly sections: Record<WkSectionId, string>;
+  readonly fields: Record<WkFieldKey, WkFieldCopy>;
+  readonly overridden: string;
+  readonly reset: string;
+  readonly configured: string;
+  readonly notConfigured: string;
+  readonly readOnlyNote: string;
+  readonly unavailable: string;
+  readonly saveFailed: string;
+  readonly save: string;
+  readonly saving: string;
+  readonly showInSettings: string;
+  readonly showInSettingsHint: string;
+  readonly invalidRange: string;
+}
+
+const en = {
   sections: {
     api: 'API',
     tracking: 'Tracking',
@@ -84,25 +109,19 @@ const en: { [K in keyof typeof zh]: string } = {
   reset: 'Reset',
   configured: 'Configured',
   notConfigured: 'Not configured',
-  readOnlyNote: 'Read-only on this deployment',
-  saveRefused: 'The host refused this write; check that the values are valid',
-  saveFailed: 'Accepted but did not land; check and retry',
-  discard: 'Discard changes',
+  readOnlyNote: 'This deployment stores settings read-only.',
+  unavailable: 'This plugin is not loaded, so it cannot be configured right now.',
+  saveFailed: 'The deployment did not accept these values; they were left for you to correct.',
   save: 'Save',
   saving: 'Saving…',
   showInSettings: 'Show in settings',
   showInSettingsHint: 'Show this plugin\'s settings page in the settings dialog (refresh to take effect)',
-  helpAriaLabel: '{field} help',
-  invalidRange: 'Must be an integer between {min} and {max}',
-};
+  invalidRange: 'Enter an integer from {min} to {max}, or leave blank to use the default.',
+} as const satisfies WkStrings;
 
-/** 单语言文案字典类型（宽化为 string，zh/en 通用）。 */
-export type WkStrings = { [K in keyof typeof zh]: string };
+export type WkLocaleId = 'zh' | 'en';
 
-/** 字段 key 联合（WAKATIME_FIELDS.key 的合法取值）。 */
-export type WkFieldKey = keyof typeof zh.fields;
-
-/** 全部 locale 字典（键集一致，由 en 的映射类型保证）。 */
+/** 全部 locale 字典（键集一致，由 satisfies WkStrings 保证）。 */
 export const wkDicts: Record<WkLocaleId, WkStrings> = { zh, en };
 
 /** 归一化 locale id：处理 zh-CN/zh-Hans 等变体。 */
