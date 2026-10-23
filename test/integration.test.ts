@@ -226,6 +226,29 @@ describe('Integration Tests', () => {
       expect(heartbeat.entity.endsWith('...')).toBe(true);
     });
 
+    it('does not let a read overwrite a write of the same file within 5s', async () => {
+      // 回归：pending 缓冲原先只以 entity 作键。同一文件在 5 秒窗口内先 edit
+      // 后 read 时，read 的 browsing 会覆盖掉 edit 的 coding / is_write / 行数，
+      // 写代码的统计直接不见了。
+      const session = { id: 'merge-key', header: { cwd: process.cwd() } };
+      const tracker = new FileTracker(session as any, { project_name: 'merge-key-test', language: '' });
+      const path = '/repo/a.ts';
+
+      await tracker.trackToolCall({
+        type: 'tool/call',
+        data: { turn: 1, step: 1, callId: 'c-edit', name: 'edit', arguments: JSON.stringify({ file_path: path, old_string: 'a', new_string: 'b\nc' }) },
+      } as any);
+      await tracker.trackToolCall({
+        type: 'tool/call',
+        data: { turn: 1, step: 2, callId: 'c-read', name: 'read', arguments: JSON.stringify({ file_path: path }) },
+      } as any);
+
+      const pending = tracker.getPending();
+      expect(pending).toHaveLength(2);
+      expect(pending.filter((hb) => hb.is_write).map((hb) => hb.category)).toEqual(['coding']);
+      expect(pending.filter((hb) => !hb.is_write).map((hb) => hb.category)).toEqual(['browsing']);
+    });
+
     it('keeps every string field inside the server-side limits', async () => {
       // 逐条 400 的第二个来源：project/branch 的上限是 1024（entity 是 2083）。
       // 覆盖路径：用户在设置页把「项目名称」填成超长串、或某个 package.json

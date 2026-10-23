@@ -151,13 +151,16 @@ export class FileTracker {
       }
     }
 
-    // Merge with existing heartbeat for same entity within 5 seconds
-    const existing = this.pending.get(entity);
+    // 合并窗口内按「entity + category」归并（与 WakaTime 服务端 5 秒去重一致）。
+    // 只按 entity 作键会丢统计：同一文件先 edit（coding / is_write / 行数）后
+    // read（browsing），Object.assign 让后者把前者的类别与写标记整个覆盖掉。
+    const pendingKey = `${entity}\u0000${heartbeat.category ?? ''}`;
+    const existing = this.pending.get(pendingKey);
     if (existing && (heartbeat.time - existing.time) < 5) {
       Object.assign(existing, heartbeat);
       existing.time = heartbeat.time;
     } else {
-      this.pending.set(entity, heartbeat);
+      this.pending.set(pendingKey, heartbeat);
     }
   }
 
