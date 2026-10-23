@@ -193,7 +193,7 @@ api_key = sk-xxxxxxxxxxxx
 | `write` | `coding` | true |
 | `edit` | `coding` | true |
 | `read` | `browsing` | false |
-| `bash` / `pwsh` | `building` | false |
+| `bash` / `pwsh` | decided by the command itself — see “Shell category mapping” below | false |
 | `grep` / `glob` | `browsing` | false |
 | `web_search` | `researching` | false |
 | `mcp__codegraph__codegraph_explore` | `code reviewing` | false |
@@ -285,15 +285,44 @@ src/
    `entity` ends with `...`. If per-item rejections still appear, some field is outside the
    clamping coverage — paste the server reason from the warning into an issue.
 
-### Known boundary: every shell command is counted as building
+### Shell category mapping
 
-`bash` / `pwsh` tool calls are always reported as `type=app`, `category=building`,
-`language=Shell`, with the whole command line as `entity`. Sessions that lean on the shell
-therefore have their "coding time" systematically counted as "building", their language
-breakdown dominated by Shell, and every distinct command becoming its own entity
-(cardinality explosion). The official wakatime-cli classifies only actual build/test
-commands as building. Changing this affects comparability with historical data, so it is
-not addressed here.
+The category of a `bash` / `pwsh` call is now derived from the command itself
+(`src/category.ts`) instead of being hardcoded to `building`. Replaying the 5290 shell
+heartbeats already stored on the account gives this before/after:
+
+| category | before | after |
+|---|---|---|
+| `building` | 100.0% | 1.3% |
+| `coding` | — | 50.6% |
+| `browsing` | — | 46.4% |
+| `researching` | — | 0.8% |
+| `running tests` | — | 0.5% |
+| `debugging` | — | 0.3% |
+
+i.e. 98.7% of what the dashboard reported as "building" was not building.
+
+Rules and hard constraints:
+
+- **Only the bare subcommand is inspected, never the trailing arguments.** The counter-example
+  that motivated this: `grep -n foo test/a_test.py` — a path containing `test` used to be
+  classified as running tests, inventing 411 fake test records in the account. File-inspection
+  tools (`ls` / `cat` / `grep` / `sed` / `head` …) are unconditionally `browsing`.
+- **Wrapper layers are peeled first**: a leading `cd <dir> &&`, `export`, `sudo` / `time` /
+  `timeout`, and the one-shot `npx` / `bunx` prefix (including `--yes`, `--package <pkg>`,
+  `vitest@2`). Without peeling, the most common DSH shape
+  `cd repo && pnpm test | tail` always resolves to `cd`.
+- **Only categories from the authoritative WakaTime set are emitted** (see
+  `wakatime-cli` `pkg/heartbeat/category.go`): the list has no `deployment` and no `testing`
+  (the correct value is `running tests`); an invented word cannot be aggregated by the
+  dashboard. Platform tools like `docker` / `kubectl` are therefore split by subcommand into
+  `browsing` (reading state) and `building` (making changes).
+- Anything unrecognised falls back to `coding`.
+
+Still out of scope: `entity` remains the full command line — those 5281 shell heartbeats map
+to **5158 distinct entities, 98.2% of which appear exactly once**, so there is no aggregatable
+dimension on the command axis; and `language` stays `Shell`. Both change comparability with
+historical data and are untouched in this version.
 
 ## License
 

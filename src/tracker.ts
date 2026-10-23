@@ -1,4 +1,5 @@
 import { WakaTimeHeartbeat, TOOL_CATEGORY_MAP, WRITE_TOOLS, MCP_DEBUGGING_PREFIX, DiffResult, clampEntity, clampField, HEARTBEAT_FIELD_LIMITS } from './types.js';
+import { classifyShellCommand } from './category.js';
 import { resolveLanguage } from './language.js';
 import { resolveProject, resolveBranch, resolveProjectRootCount, resolveDependencies } from './project.js';
 import { calculateWriteDiff, calculateEditDiff } from './diff.js';
@@ -112,7 +113,7 @@ export class FileTracker {
       args = {};
     }
     
-    const category = this.resolveCategory(name);
+    const category = this.resolveCategory(name, name === 'bash' || name === 'pwsh' ? String(args.command ?? '') : undefined);
     const isWrite = WRITE_TOOLS.has(name);
     const entity = this.extractEntity(name, args);
 
@@ -226,10 +227,16 @@ export class FileTracker {
     this.pending.clear();
   }
 
-  private resolveCategory(toolName: string): string {
+  private resolveCategory(toolName: string, shellCommand?: string): string {
     if (!toolName) return 'coding';
     if (toolName.startsWith(MCP_DEBUGGING_PREFIX)) {
       return 'debugging';
+    }
+    // shell 的类别由命令本身决定：一律记 building 会把 ls/grep 这类文件检视
+    // 算成构建时间（实测占账号里 shell 心跳的 45%，真构建只占 0.5%）。
+    // 类别取值域见 src/category.ts 顶部——只用 WakaTime 权威集合里的词。
+    if (toolName === 'bash' || toolName === 'pwsh') {
+      return classifyShellCommand(shellCommand ?? '');
     }
     return TOOL_CATEGORY_MAP[toolName] || 'coding';
   }

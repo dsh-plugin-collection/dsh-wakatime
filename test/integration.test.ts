@@ -265,6 +265,35 @@ describe('Integration Tests', () => {
       expect(heartbeat.project).toBeUndefined();
     });
 
+    it('derives a bash heartbeat category from the command, not from the tool name', async () => {
+      // 接线断言：分类函数本身正确不代表 tracker 用了它——bash 此前经
+      // TOOL_CATEGORY_MAP 硬映射到 building，这才是「构建时间」被 98.7% 误报的源头。
+      const mockSession = { id: 'test-session', header: { cwd: process.cwd() } };
+      const tracker = new FileTracker(mockSession as any, { project_name: 'cat-test', language: '' });
+
+      const cases: Array<[string, string]> = [
+        ['cd /repo && pnpm test 2>&1 | tail -40', 'running tests'],
+        ['ls -la /repo/src', 'browsing'],
+        ['git status --short', 'coding'],
+      ];
+      for (const [index, [command]] of cases.entries()) {
+        await tracker.trackToolCall({
+          type: 'tool/call',
+          data: { turn: 1, step: index, callId: `c-${index}`, name: 'bash', arguments: JSON.stringify({ command }) },
+        } as any);
+      }
+      for (const [command, expected] of cases) {
+        expect(tracker.getPending().find((hb) => hb.entity === command)?.category).toBe(expected);
+      }
+
+      // 非 shell 工具仍走静态映射，未被误改
+      await tracker.trackToolCall({
+        type: 'tool/call',
+        data: { turn: 1, step: 9, callId: 'c-read', name: 'read', arguments: JSON.stringify({ file_path: '/repo/a.ts' }) },
+      } as any);
+      expect(tracker.getPending().find((hb) => hb.entity === '/repo/a.ts')?.category).toBe('browsing');
+    });
+
     it('stamps the heartbeat with the event time, not the processing time', async () => {
       // 事件从产生到被处理之间隔着队列积压与 project/branch 探测的 await，
       // 用 Date.now() 会把活动记到错误时刻，直接污染 WakaTime 的时长计算。

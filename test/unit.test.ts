@@ -3,6 +3,7 @@ import { resolveLanguage } from '../src/language.js';
 import { resolveProject, resolveBranch, resolveProjectRootCount, resolveDependencies, readWakatimeCfgApiKey, maskApiKey, clearResolveCaches } from '../src/project.js';
 import { calculateWriteDiff, calculateEditDiff } from '../src/diff.js';
 import { clampEntity, clampField } from '../src/types.js';
+import { classifyShellCommand, firstRealCommand } from '../src/category.js';
 import { FileTracker } from '../src/tracker.js';
 import { secretSlotSet, SETTINGS_NAMESPACE_CANDIDATES } from '../src/client/mirror.js';
 import type { MirrorSnapshotLike } from '../src/client/mirror.js';
@@ -129,6 +130,93 @@ describe('diff.ts', () => {
       const newContent = 'new\n'.repeat(10001);
       const result = calculateEditDiff(oldContent, newContent);
       expect(result).toBeNull();
+    });
+  });
+});
+
+describe('category.ts shell classification', () => {
+  /**
+   * WakaTime 权威类别集合（wakatime-cli pkg/heartbeat/category.go）。
+   * 测试用它的目的不是复述文档，而是把「不许自造类别」变成断言：表里没有
+   * `deployment`，也没有 `testing`（正确值是 `running tests`），落进陌生词
+   * 的数据在面板上无法聚合。
+   */
+  const CANONICAL = new Set([
+    'advising', 'ai coding', 'browsing', 'building', 'code reviewing', 'coding',
+    'communicating', 'debugging', 'designing', 'indexing', 'learning',
+    'manual testing', 'meeting', 'planning', 'researching', 'running tests',
+    'supporting', 'translating', 'writing docs', 'writing tests',
+  ]);
+
+  const CASES: Array<[string, string]> = [
+    // 构建工具的子命令决定类别，而不是命令名
+    ['cd /repo && pnpm test 2>&1 | tail -40', 'running tests'],
+    ['pnpm run build', 'building'],
+    ['npm run typecheck', 'debugging'],
+    ['cargo build --tests', 'building'],
+    ['tsc -p tsconfig.json --noEmit', 'building'],
+    ['make', 'building'],
+    ['go vet ./...', 'building'],
+    // 反例（实测踩过）：路径里含 test 不等于在跑测试
+    ['grep -n "timezone" test/backend/api/test_ema_tools.py', 'browsing'],
+    ['sed -n 1,40p test/helper/test_timezone_utils.py', 'browsing'],
+    ['cat src/index.ts', 'browsing'],
+    ['ls -la /tmp/x', 'browsing'],
+    ['head -5 notes.md && tail -5 notes.md', 'browsing'],
+    // 检视类优先于包装器与管道
+    ['timeout 120 pytest -q', 'running tests'],
+    ['sudo ruff check backend/app', 'debugging'],
+    ['cd /a && cd /b && rg -l "TODO"', 'browsing'],
+    // 版本控制与脚本
+    ['git status --short', 'coding'],
+    ['python3 - <<\'EOF\'\nprint(1)\nEOF', 'coding'],
+    ['npx vitest run', 'running tests'],
+    // npx 是一次性执行前缀：真实动作在被包住的工具上
+    ['npx --yes vitest run', 'running tests'],
+    ['npx playwright test', 'running tests'],
+    ['npx tsc --noEmit', 'building'],
+    ['npx eslint src/index.ts', 'debugging'],
+    // 平台工具：看子命令，get/ps 是看状态，apply/build 是执行变更
+    ['kubectl get deploy app -o yaml', 'browsing'],
+    ['kubectl rollout restart deploy/app', 'building'],
+    ['docker ps -a', 'browsing'],
+    ['docker build -t app .', 'building'],
+    ['terraform plan', 'browsing'],
+    // 取数与未知
+    ['curl -s -H "Authorization: token x" http://127.0.0.1:3080/api/x', 'researching'],
+    ['some-unknown-tool --do-thing', 'coding'],
+    ['', 'coding'],
+  ];
+
+  it.each(CASES)('classifies %s', (command, expected) => {
+    expect(classifyShellCommand(command)).toBe(expected);
+  });
+
+  it('never emits a category outside the authoritative set', () => {
+    for (const [command] of CASES) {
+      expect(CANONICAL.has(classifyShellCommand(command))).toBe(true);
+    }
+  });
+
+  describe('firstRealCommand', () => {
+    it('peels cd / wrappers / pipes down to the real command', () => {
+      expect(firstRealCommand('cd /repo && pnpm test 2>&1 | tail -40')).toEqual(['pnpm', 'test']);
+      expect(firstRealCommand('export FOO=1 && npm run build')).toEqual(['npm', 'run']);
+      expect(firstRealCommand('timeout 5 kubectl get pods')).toEqual(['kubectl', 'get']);
+      expect(firstRealCommand('')).toEqual(['', '']);
+    });
+
+    it('peels the npx prefix without losing the wrapped command', () => {
+      expect(firstRealCommand('npx --yes vitest run')).toEqual(['vitest', 'run']);
+      expect(firstRealCommand('npx vitest@2 run')).toEqual(['vitest', 'run']);
+      // 已知带空格取值的选项要连取值一起剥：`npx --package vitest x` 的真命令
+      // 是 `x`，`vitest` 只是附带安装的包——把包名当命令会判错类别。
+      expect(firstRealCommand('npx --package vitest x')).toEqual(['x', '']);
+    });
+
+    it('keeps the first bare argument only, never a path tail', () => {
+      // 判定的全部依据来自这里：一旦把路径参数当子命令，test/*.py 就会被读成 test
+      expect(firstRealCommand('grep -n foo test/a_test.py')).toEqual(['grep', '-n']);
     });
   });
 });
