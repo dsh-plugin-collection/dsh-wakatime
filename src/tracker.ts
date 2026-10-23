@@ -54,12 +54,21 @@ interface AssistantMessageEvent {
   };
 }
 
+/** shell 类心跳缺省的 app entity（设置留空时回退到这里）。 */
+export const DEFAULT_APP_ENTITY = 'Terminal';
+
 /** FileTracker 需要的配置切片；传入共享的 runtime 配置对象即获得实时更新。 */
 export interface TrackerConfig {
   /** 覆盖自动检测的项目名 */
   project_name?: string;
   /** 覆盖自动检测的语言 */
   language?: string;
+  /**
+   * shell 心跳（`type: 'app'`）的 entity —— 应用名。
+   * 空白/未设置时回退 {@link DEFAULT_APP_ENTITY}：entity 空串会被服务端逐条 400
+   * 拒收，而把整条命令原文当 entity 又不符合 app 类型的语义（见 index.ts 的 app_entity）。
+   */
+  app_entity?: string;
 }
 
 export class FileTracker {
@@ -151,9 +160,10 @@ export class FileTracker {
       }
     }
 
-    // 合并窗口内按「entity + category」归并（与 WakaTime 服务端 5 秒去重一致）。
-    // 只按 entity 作键会丢统计：同一文件先 edit（coding / is_write / 行数）后
-    // read（browsing），Object.assign 让后者把前者的类别与写标记整个覆盖掉。
+    // 同 entity + 同 category 在 5 秒窗口内合并成一条（与 WakaTime 服务端的
+    // 去重窗口一致）。缓冲键必须带上 category：shell 心跳现在共用同一个 entity
+    // （应用名），若只按 entity 作键，5 秒内先后跑的 `pnpm test` 与 `ls` 会互相
+    // 覆盖，最后只剩后一条的类别——一次跑测试的痕迹会被一条浏览抹掉。
     const pendingKey = `${entity}\u0000${heartbeat.category ?? ''}`;
     const existing = this.pending.get(pendingKey);
     if (existing && (heartbeat.time - existing.time) < 5) {
@@ -182,6 +192,9 @@ export class FileTracker {
     const time = this.eventTime(event);
     const project = await this.legalProject();
     const heartbeat: WakaTimeHeartbeat = {
+      // 会话类心跳有意保留 `dsh-session-<id>` 作为 entity，不套用 app_entity：
+      // 它的基数由会话数决定（有界、且是唯一能按会话下钻的维度），不像命令原文
+      // 那样每次都产生新实体。要按会话聚合 AI 数据也有 ai_session 字段承载。
       entity: clampEntity(`dsh-session-${this.session.id}`),
       type: 'app',
       // 类别一律小写，与 TOOL_CATEGORY_MAP（types.ts）及 WakaTime 其他类别保持一致；
@@ -247,16 +260,30 @@ export class FileTracker {
   private extractEntity(toolName: string, args: any): string | null {
     if (!args) return null;
     if (toolName === 'bash' || toolName === 'pwsh') {
-      // 命令原文即 entity，长度完全由模型决定（heredoc/内联脚本轻松上千字符）。
-      // 必须裁剪：WakaTime 对 entity 有 2083 字符硬校验，超限的那条被逐条 400
-      // 拒绝，而批量接口外层仍返回 202——不裁剪就是静默丢数据。
-      return args.command ? clampEntity(String(args.command)) : null;
+      // 没有命令就不产生心跳；有命令时 entity 用「应用名」而非命令原文。
+      // 依据：wakatime-cli 的 entity 类型定义里 AppType 注释是 "represents an app
+      // entity"——app 的 entity 该是应用。此前塞整行命令等于声称「存在一个叫这串
+      // 命令的应用」：实测 5281 条 shell 心跳散成 5158 个不同 entity（98.2% 只出现
+      // 一次），既没有聚合价值，又随时可能撞 entity 的 2083 字符硬校验被逐条 400。
+      // 命令在干什么改由 category 体现（见 category.ts）。
+      if (!args.command) return null;
+      return this.appEntity();
     }
     if (args.file_path) return clampEntity(String(args.file_path));
     if (args.path) return clampEntity(String(args.path));
     if (args.target_file) return clampEntity(String(args.target_file));
     if (args.entity) return clampEntity(String(args.entity));
     return null;
+  }
+
+  /**
+   * shell 心跳的 entity：设置里的应用名。
+   *
+   * @returns 裁剪进 entity 上限后的应用名；设置为空白/未设置时回退
+   *   {@link DEFAULT_APP_ENTITY}——entity 空串会被服务端逐条 400 拒收。
+   */
+  private appEntity(): string {
+    return clampField(this.config.app_entity, HEARTBEAT_FIELD_LIMITS.entity) || DEFAULT_APP_ENTITY;
   }
 
   /**

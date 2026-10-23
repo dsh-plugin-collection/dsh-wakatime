@@ -1,12 +1,16 @@
 - insert:
     - id: dsh-wakatime
       name: 'dsh-wakatime'
+      # 注意：`!!js` 表达式在 bundle 层可能不被求值，插件会收到整块保留的节点
+      # （形状 { __jsExpr: '…' }，是对象）。插件侧已按「只接受非空字符串」解析
+      # api_key 并逐级回退（见 src/index.ts），这里留表达式是为了 env 覆盖的便利。
       config:
         api_key: !!js process.env.WAKATIME_API_KEY || ''
         api_url: !!js process.env.WAKATIME_API_URL || 'https://wakatime.com'
         heartbeat_interval_ms: 120000
         project_name: ''
         language: ''
+        app_entity: Terminal
         include_tool_calls: true
         include_user_messages: false
         include_assistant_messages: false

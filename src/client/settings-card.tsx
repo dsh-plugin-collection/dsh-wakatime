@@ -59,6 +59,9 @@ export const WAKATIME_FIELDS: ReadonlyArray<{
   { key: 'include_assistant_messages', kind: 'boolean', section: 'tracking' },
   { key: 'project_name', kind: 'combo', section: 'tracking' },
   { key: 'language', kind: 'combo', section: 'tracking' },
+  // 应用名是自由文本：候选值无意义（它就是要表达「这是哪个应用」），且留空有
+  // 明确的服务端默认（Terminal），不必做成 combobox。
+  { key: 'app_entity', kind: 'text', section: 'tracking' },
   // —— 缓存与调试 ——
   { key: 'cache_heartbeats', kind: 'boolean', section: 'cacheDebug' },
   { key: 'cache_limit', kind: 'number', section: 'cacheDebug', min: 10, max: 1000 },

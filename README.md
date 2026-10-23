@@ -144,6 +144,7 @@ After installing and restarting DSH:
    - **Heartbeat Interval**: How often to send heartbeats (60000-300000ms)
    - **Project Name**: Override auto-detected project name
    - **Language**: Override auto-detected language
+   - **Terminal App Name**: entity for command heartbeats (an app name); blank falls back to `Terminal`
    - **Track Tool Calls**: Enable/disable tool call tracking
    - **Track User Messages**: Enable/disable user message tracking
    - **Track AI Messages**: Enable/disable AI message tracking
@@ -319,10 +320,28 @@ Rules and hard constraints:
   `browsing` (reading state) and `building` (making changes).
 - Anything unrecognised falls back to `coding`.
 
-Still out of scope: `entity` remains the full command line — those 5281 shell heartbeats map
-to **5158 distinct entities, 98.2% of which appear exactly once**, so there is no aggregatable
-dimension on the command axis; and `language` stays `Shell`. Both change comparability with
-historical data and are untouched in this version.
+### Entity for command heartbeats
+
+A `bash` / `pwsh` heartbeat has `type: "app"`, and per wakatime-cli's own definition
+(*"AppType represents an app entity"*) the entity of an app heartbeat should be **an
+application name**, not a command line. Using the raw command made the 5281 shell
+heartbeats on the account fan out into **5158 distinct entities, 98.2% of which appear
+exactly once** — no aggregatable dimension, and a constant risk of tripping the 2083
+character entity limit, which rejects such heartbeats per item.
+
+The entity now comes from the "Terminal App Name" setting (default `Terminal`; e.g. set
+it to `DSH`). Leaving it blank falls back to the default — an empty entity is rejected by
+the server, so there is no path that sends one. What the command was doing is expressed by
+`category`. Repeated calls inside the 5 second window are still merged, but the merge key is
+`entity + category`: with a shared app name, a bare `entity` key would let a later `ls`
+overwrite an earlier `pnpm test`.
+
+User / assistant heartbeats **deliberately keep** `dsh-session-<id>` as their entity: its
+cardinality is bounded by the number of sessions and it is the only dimension that drills
+down per session (AI attribution additionally carries `ai_session`).
+
+Remaining boundary: `language` for shell heartbeats is still `Shell`, and the entity shape
+change cannot be retrofitted — cross-version comparisons on the entity axis will not line up.
 
 ## License
 

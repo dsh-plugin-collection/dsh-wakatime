@@ -144,6 +144,7 @@ pnpm build
    - **Heartbeat Interval**：心跳发送间隔（60000–300000ms）
    - **Project Name**：覆盖自动识别的项目名
    - **Language**：覆盖自动识别的语言
+   - **Terminal App Name**：命令执行类心跳的 entity（应用名）；留空按 `Terminal` 上报
    - **Track Tool Calls**：启用/禁用工具调用追踪
    - **Track User Messages**：启用/禁用用户消息追踪
    - **Track AI Messages**：启用/禁用 AI 消息追踪
@@ -314,9 +315,23 @@ src/
   与 `building`（执行变更）。
 - 认不出来的命令按 `coding` 计。
 
-仍然存在的边界：`entity` 依旧是整条命令原文，5281 条 shell 心跳对应 **5158 个不同
-entity、98.2% 只出现过一次**——命令维度上没有可聚合性；`language` 也仍固定为 `Shell`。
-这两项会改变与历史数据的可比性，未在本版本调整。
+### 命令心跳的 entity
+
+`bash` / `pwsh` 心跳的 `type` 是 `app`。按 wakatime-cli 的定义（*"AppType represents
+an app entity"*），app 类型的 entity 应该是**应用名**，不是命令行。此前把整行命令当
+entity，实测 5281 条 shell 心跳散成 **5158 个不同 entity，其中 98.2% 只出现过一次**——
+既没有聚合价值，又随时可能撞 entity 的 2083 字符硬校验被逐条 400 拒收。
+
+现在它取设置项「终端应用名」，默认 `Terminal`，可填成 `DSH` 之类；留空回退默认值
+（空 entity 会被服务端拒绝，不存在"发空值"这条路）。命令在做什么由 `category` 表达。
+5 秒窗口内的重复调用仍会合并成一条，但合并键是 `entity + category`——否则同一应用名
+下，一条 `ls` 会把 5 秒前的 `pnpm test` 覆盖掉。
+
+用户消息 / AI 回复类心跳**有意保留** `dsh-session-<id>` 作为 entity：它的基数由会话数
+决定（有界），且是唯一能按会话下钻的维度；AI 侧另有 `ai_session` 字段承载会话身份。
+
+遗留边界：shell 心跳的 `language` 仍固定为 `Shell`；entity 形态一经改变无法回溯，
+按 entity 维度的跨版本对比会断裂。
 
 ## 许可证
 
