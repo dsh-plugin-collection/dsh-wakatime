@@ -415,6 +415,19 @@ export function apply(ctx: Context, config: Config): void {
     // 未落库 = 失败批次起点之后的全部 + 之前各批里逐条被拒且可重试的。
     const unpersisted = failure ? [...heartbeats.slice(failure.at), ...retryable] : retryable;
 
+    // 回写缓存与「有没有传输失败」是两件事：只有逐条 429/5xx 时外层依旧成功，
+    // 但那些条目同样没落库，必须一起回缓存。
+    // （回归：上一版把 appendBatch 写在 `if (failure)` 里面，纯限流场景下
+    // retryable 被直接丢弃——可重试的数据不该按永久失败处理。）
+    if (runtime.cache_heartbeats && unpersisted.length > 0) {
+      try {
+        await cache.appendBatch(unpersisted);
+      } catch (cacheError) {
+        // 磁盘写失败也不能让 rejection 冒泡（fail-loud 会杀死整个 dsh 进程）
+        ctx.logger.warn(`dsh-wakatime: failed to cache heartbeats: ${String(cacheError)}`);
+      }
+    }
+
     if (failure) {
       // 无条件 warn（此前只在 debug 下打印，且不打原因）：上报路径一旦持续
       // 失败，缓存会被 enforceLimit 截断成新 100 条，用户侧表现为「时间凭空缺失」，
@@ -422,18 +435,14 @@ export function apply(ctx: Context, config: Config): void {
       ctx.logger.warn(
         `dsh-wakatime: 上报失败，${unpersisted.length} 条心跳转入缓存重试（本批 ${heartbeats.length} 条，已落库 ${accepted} 条）：${String(failure.error)}`,
       );
-      if (runtime.cache_heartbeats && unpersisted.length > 0) {
-        try {
-          await cache.appendBatch(unpersisted);
-        } catch (cacheError) {
-          // 磁盘写失败也不能让 rejection 冒泡（fail-loud 会杀死整个 dsh 进程）
-          ctx.logger.warn(`dsh-wakatime: failed to cache heartbeats: ${String(cacheError)}`);
-        }
-      }
     } else if (rejectedPermanent > 0) {
-      // 逐条 400 的重试必然再失败，只能丢弃；丢弃必须说出来，否则就是静默丢数据。
+      // 逐条 4xx 的重试必然再失败，只能丢弃；丢弃必须说出来，否则就是静默丢数据。
       ctx.logger.warn(
         `dsh-wakatime: ${rejectedPermanent}/${heartbeats.length} 条心跳被 WakaTime 逐条拒绝并已丢弃（重试无效），样例 ${rejectionSample}`,
+      );
+    } else if (retryable.length > 0) {
+      ctx.logger.warn(
+        `dsh-wakatime: ${retryable.length}/${heartbeats.length} 条心跳被逐条限流或服务端错误退回，已转入缓存重试`,
       );
     } else if (runtime.debug) {
       ctx.logger.info(`dsh-wakatime: flushed ${accepted} heartbeats`);

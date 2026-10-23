@@ -117,22 +117,24 @@ export class HeartbeatCache {
       }
     }
 
-    if (!failure) {
+    // 留在缓存里的 = 失败点之后未发出的 + 各批中被逐条退回且可重试的。
+    // 「外层成功」不等于「全部落库」：只有逐条 429/5xx 时 failure 为空，
+    // 此时若直接 clear()，那些心跳就被当成永久失败悄悄丢掉了。
+    const remaining = failure ? [...heartbeats.slice(failure.at), ...retryable] : retryable;
+
+    if (remaining.length === 0) {
       await this.clear();
       return;
     }
 
-    const remaining = [...heartbeats.slice(failure.at), ...retryable];
-    // 一条都没发出去（首批即失败且无逐条拒绝）时文件内容本就等于 remaining，
-    // 不必重写；其余情况写回真实剩余集合，避免把已落库的条目再发一遍。
-    if (remaining.length !== heartbeats.length) {
-      try {
-        await writeFile(this.cachePath, remaining.map(hb => JSON.stringify(hb) + '\n').join(''));
-      } catch {
-        // 写回失败则保留原文件内容：宁可重复已发部分，也不丢未发数据
-      }
+    // 写回真实剩余集合，避免把已落库的条目再发一遍。
+    try {
+      await writeFile(this.cachePath, remaining.map(hb => JSON.stringify(hb) + '\n').join(''));
+    } catch {
+      // 写回失败则保留原文件内容：宁可重复已发部分，也不丢未发数据
     }
-    throw failure.error;
+
+    if (failure !== null) throw failure.error;
   }
 
   private async enforceLimit(): Promise<void> {

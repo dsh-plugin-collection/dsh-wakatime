@@ -445,8 +445,8 @@ describe('Integration Tests', () => {
       expect(rejected.detail).toContain('2083');
       // 4xx 校验失败与传输无关：同一条载荷重试必然再失败
       expect(rejected.permanent).toBe(true);
-      // 外层仍是 2xx，坏条目不影响同批其余心跳入库
-      expect(server.getReceivedHeartbeats()).toHaveLength(3);
+      // 外层仍是 2xx：坏条目被逐条拒掉，同批其余心跳照常入库
+      expect(server.getReceivedHeartbeats().map((h: any) => h.entity)).toEqual(['/ok/a.ts', '/ok/b.ts']);
     });
 
     it('classifies a 429 item as retryable, unlike a validation 400', async () => {
@@ -521,6 +521,29 @@ describe('Integration Tests', () => {
 
       expect(server.getReceivedHeartbeats()).toHaveLength(2);
       expect(await cache.count()).toBe(0);
+    });
+
+    it('keeps per-item throttled entries when flushing the cache', async () => {
+      // 外层 202 不等于全部落库：缓存补发时被逐条 429 退回的条目必须留在缓存里。
+      // 旧写法在「无传输失败」时直接 clear()，那部分心跳就被当永久失败清掉了。
+      await cache.appendBatch([
+        { entity: '/path/cache-ok.ts', type: 'file', time: Date.now() / 1000 },
+        { entity: '/path/cache-429.ts', type: 'file', time: Date.now() / 1000 },
+      ]);
+      server.setRejectEntitySubstrings(['cache-429']);
+      server.setPerItemRejectStatus(429);
+
+      await cache.flush(client);
+
+      expect(server.getReceivedHeartbeats().map((h: any) => h.entity)).toEqual(['/path/cache-ok.ts']);
+      expect((await cache.readAll()).map((h) => h.entity)).toEqual(['/path/cache-429.ts']);
+
+      // 限流解除后补发成功，缓存清空
+      server.setRejectEntitySubstrings([]);
+      await cache.flush(client);
+      expect(await cache.count()).toBe(0);
+      expect(server.getReceivedHeartbeats().map((h: any) => h.entity).sort())
+        .toEqual(['/path/cache-429.ts', '/path/cache-ok.ts']);
     });
 
     it('should skip corrupt lines instead of failing the whole flush', async () => {
@@ -823,6 +846,54 @@ describe('Plugin wiring (apply)', () => {
     const final = server.getReceivedHeartbeats().map((h: any) => h.entity);
     expect(final).toHaveLength(total);
     expect(new Set(final).size).toBe(total);
+  });
+
+  it('keeps a throttled heartbeat retryable instead of dropping or duplicating it', async () => {
+    // 逐条 429 与逐条 400 的分岔必须被真实驱动一次：判错方向要么丢数据
+    // （429 当永久失败丢弃），要么重复入库（400 当可重试反复重发）。
+    const { ctx, emit, logs } = makeFakeCtx();
+    const session = { id: 'wiring-throttle', header: { cwd: process.cwd() } };
+    server.setRejectEntitySubstrings(['THROTTLED']);
+    server.setPerItemRejectStatus(429);
+
+    apply(ctx as Context, {
+      api_key: 'test_key_12345',
+      api_url: server.getBaseUrl(),
+      heartbeat_interval_ms: 60000,
+      project_name: 'throttle-test', language: '',
+      include_tool_calls: true, include_user_messages: false, include_assistant_messages: false,
+      cache_heartbeats: true, cache_limit: 100, debug: false,
+    } as any);
+
+    emit('agent/status', { agent: { session }, status: 'running' });
+    const paths = ['/path/fine.ts', '/path/THROTTLED.ts'];
+    for (const [step, path] of paths.entries()) {
+      emit('session/event', session, {
+        type: 'tool/call',
+        data: { turn: 1, step, callId: `c-${step}`, name: 'read', arguments: JSON.stringify({ file_path: path }) },
+      });
+    }
+    emit('agent/status', { agent: { session }, status: 'idle' });
+
+    const cache = new HeartbeatCache({ cache_limit: 100 });
+    for (let t = 0; t < 200 && (await cache.count()) === 0; t++) {
+      await new Promise(r => setTimeout(r, 25));
+    }
+    // 未被限流的那条入库，被限流的那条进缓存（不是丢弃）
+    expect(server.getReceivedHeartbeats().map((h: any) => h.entity)).toEqual(['/path/fine.ts']);
+    expect((await cache.readAll()).map((h) => h.entity)).toEqual(['/path/THROTTLED.ts']);
+    // 「丢弃」告警不该出现——它是可重试，不是永久失败
+    expect(logs().some((m) => m.includes('逐条拒绝'))).toBe(false);
+
+    // 限流解除后补发，且只发这一次
+    server.setRejectEntitySubstrings([]);
+    emit('agent/status', { agent: { session }, status: 'idle' });
+    for (let t = 0; t < 200 && (await cache.count()) > 0; t++) {
+      await new Promise(r => setTimeout(r, 25));
+    }
+    expect(await cache.count()).toBe(0);
+    expect(server.getReceivedHeartbeats().map((h: any) => h.entity).sort())
+      .toEqual(['/path/THROTTLED.ts', '/path/fine.ts']);
   });
 
   it('surfaces per-item rejections instead of silently dropping them', async () => {

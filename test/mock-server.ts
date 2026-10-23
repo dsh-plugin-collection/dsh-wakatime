@@ -119,7 +119,6 @@ export class MockWakaTimeServer {
     try {
       const parsed = JSON.parse(body);
       heartbeats = Array.isArray(parsed) ? parsed : [parsed];
-      this.receivedHeartbeats.push(...heartbeats);
     } catch {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Bad request' }));
@@ -129,6 +128,8 @@ export class MockWakaTimeServer {
 
     // Success response —— 真实 heartbeats.bulk 的形状：外层 202，逐条各带状态码。
     // `{"responses": [[{"data":{"id":"…"}}, 201], [{"errors":{…}}, 400], …]}`
+    // receivedHeartbeats 只记录【真正入库】的条目：把被逐条拒绝的也算进去，
+    // 「已落库/未落库」就无法在断言里区分了。
     const responses = heartbeats.map((hb, index) => {
       const entity = typeof hb?.entity === 'string' ? hb.entity : '';
       if (this.rejectEntitySubstrings.some((needle) => needle && entity.includes(needle))) {
@@ -140,6 +141,11 @@ export class MockWakaTimeServer {
         return [body, this.perItemRejectStatus];
       }
       return [{ data: { id: `mock-${this.postCount}-${index}` } }, 201];
+    });
+    // 只把接受下来的条目计入「已入库」集合
+    heartbeats.forEach((hb, index) => {
+      const status = (responses[index] as [unknown, number])[1];
+      if (status >= 200 && status < 300) this.receivedHeartbeats.push(hb);
     });
     res.writeHead(202, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ responses }));
