@@ -1,4 +1,4 @@
-import { WakaTimeHeartbeat, TOOL_CATEGORY_MAP, WRITE_TOOLS, MCP_DEBUGGING_PREFIX, DiffResult } from './types.js';
+import { WakaTimeHeartbeat, TOOL_CATEGORY_MAP, WRITE_TOOLS, MCP_DEBUGGING_PREFIX, DiffResult, clampEntity, clampField, HEARTBEAT_FIELD_LIMITS } from './types.js';
 import { resolveLanguage } from './language.js';
 import { resolveProject, resolveBranch, resolveProjectRootCount, resolveDependencies } from './project.js';
 import { calculateWriteDiff, calculateEditDiff } from './diff.js';
@@ -8,6 +8,12 @@ import type { Session } from '@deepseek-ai/dsh-session';
 // session/event passes the event object with { type, data } wrapper
 interface ToolCallEvent {
   type: 'tool/call';
+  /**
+   * 事件自身的 epoch 毫秒时间戳（`SessionEvent.time`，宿主在 append 时写入）。
+   * 追踪用的时间必须取它，而不是处理时的 Date.now()：异步派发/队列积压会让
+   * 处理时刻晚于发生时刻，用后者会把心跳推到错误的时段上。
+   */
+  time?: number;
   data: {
     turn: number;
     step: number;
@@ -19,6 +25,8 @@ interface ToolCallEvent {
 
 interface UserMessageEvent {
   type: 'user/message';
+  /** 见 {@link ToolCallEvent.time}。 */
+  time?: number;
   data: {
     /** DSH 0.2.0+ content 是 content blocks 数组；旧版本可能是纯字符串。 */
     content: string | Array<{ type: string; text?: string; [k: string]: unknown }>;
@@ -33,6 +41,8 @@ interface TokenUsageLike {
 
 interface AssistantMessageEvent {
   type: 'assistant/message';
+  /** 见 {@link ToolCallEvent.time}。 */
+  time?: number;
   data: {
     turn: number;
     step: number;
@@ -108,18 +118,28 @@ export class FileTracker {
 
     if (!entity) return;
 
+    // 字符串字段逐个进服务端实测上限：超长会被逐条 400 拒掉，而批量接口外层
+    // 仍是 202 —— 看不见也不重试；空串同样违规（校验是 "between 1 and N"），
+    // 所以宁可不发这个字段，让 WakaTime 自己推断，也不要拖垮整条心跳。
+    const project = clampField(await this.resolveProject(), HEARTBEAT_FIELD_LIMITS.project);
+    const branch = clampField(await this.resolveBranch(), HEARTBEAT_FIELD_LIMITS.branch);
+    const language = clampField(await this.resolveLanguage(entity, name), HEARTBEAT_FIELD_LIMITS.language);
+    const dependencies = (await this.resolveDependencies())
+      .map(dep => clampField(dep, HEARTBEAT_FIELD_LIMITS.dependency))
+      .filter(dep => dep !== '');
+
     const heartbeat: WakaTimeHeartbeat = {
       entity,
       type: name === 'bash' || name === 'pwsh' ? 'app' : 'file',
       category,
-      time: Date.now() / 1000,
-      project: await this.resolveProject(),
+      time: this.eventTime(event),
       project_root_count: await this.resolveProjectRootCount(),
-      branch: await this.resolveBranch(),
-      language: await this.resolveLanguage(entity, name),
-      dependencies: await this.resolveDependencies(),
       is_write: isWrite,
     };
+    if (project) heartbeat.project = project;
+    if (branch) heartbeat.branch = branch;
+    if (language) heartbeat.language = language;
+    if (dependencies.length > 0) heartbeat.dependencies = dependencies;
 
     if (isWrite) {
       const diff = await this.calculateDiff(name, args, entity);
@@ -155,32 +175,36 @@ export class FileTracker {
       }
     }
     this.lastPromptLength = textLen > 0 ? textLen : undefined;
+    const time = this.eventTime(event);
+    const project = await this.legalProject();
     const heartbeat: WakaTimeHeartbeat = {
-      entity: `dsh-session-${this.session.id}`,
+      entity: clampEntity(`dsh-session-${this.session.id}`),
       type: 'app',
       // 类别一律小写，与 TOOL_CATEGORY_MAP（types.ts）及 WakaTime 其他类别保持一致；
       // WakaTime 服务端负责展示层归一化。
       category: 'communicating',
-      time: Date.now() / 1000,
-      project: await this.resolveProject(),
+      time,
       is_write: false,
     };
-    this.pending.set(`user-${Date.now()}`, heartbeat);
+    if (project !== undefined) heartbeat.project = project;
+    this.pending.set(`user-${time}`, heartbeat);
   }
 
   private async trackAssistantMessageInner(event: AssistantMessageEvent): Promise<void> {
     const usage = event?.data?.usage;
+    const time = this.eventTime(event);
+    const project = await this.legalProject();
     const heartbeat: WakaTimeHeartbeat = {
-      entity: `dsh-session-${this.session.id}`,
+      entity: clampEntity(`dsh-session-${this.session.id}`),
       type: 'app',
       // WakaTime 为 GenAI 活动提供的专用类别，驱动其 AI Coding 面板统计。
       // 小写与 TOOL_CATEGORY_MAP 及其余类别统一（WakaTime 服务端做展示层归一化）。
       category: 'ai coding',
-      time: Date.now() / 1000,
-      project: await this.resolveProject(),
+      time,
       is_write: false,
       ai_session: String(this.session.id),
     };
+    if (project !== undefined) heartbeat.project = project;
     if (usage && typeof usage.inputTokens === 'number') {
       heartbeat.ai_input_tokens = usage.inputTokens;
     }
@@ -191,7 +215,7 @@ export class FileTracker {
       heartbeat.ai_prompt_length = this.lastPromptLength;
       this.lastPromptLength = undefined;
     }
-    this.pending.set(`assistant-${Date.now()}`, heartbeat);
+    this.pending.set(`assistant-${time}`, heartbeat);
   }
 
   getPending(): WakaTimeHeartbeat[] {
@@ -213,19 +237,49 @@ export class FileTracker {
   private extractEntity(toolName: string, args: any): string | null {
     if (!args) return null;
     if (toolName === 'bash' || toolName === 'pwsh') {
-      return args.command || null;
+      // 命令原文即 entity，长度完全由模型决定（heredoc/内联脚本轻松上千字符）。
+      // 必须裁剪：WakaTime 对 entity 有 2083 字符硬校验，超限的那条被逐条 400
+      // 拒绝，而批量接口外层仍返回 202——不裁剪就是静默丢数据。
+      return args.command ? clampEntity(String(args.command)) : null;
     }
-    if (args.file_path) return args.file_path;
-    if (args.path) return args.path;
-    if (args.target_file) return args.target_file;
-    if (args.entity) return args.entity;
+    if (args.file_path) return clampEntity(String(args.file_path));
+    if (args.path) return clampEntity(String(args.path));
+    if (args.target_file) return clampEntity(String(args.target_file));
+    if (args.entity) return clampEntity(String(args.entity));
     return null;
+  }
+
+  /**
+   * 心跳时间（epoch 秒）。
+   *
+   * 优先取事件自带的时间戳：追踪是 fire-and-forget，事件从产生到被这里处理
+   * 之间可能隔着队列积压与 git/依赖探测的 await，用 Date.now() 会把活动记到
+   * 错误的时刻上（WakaTime 的时长是按相邻心跳间隔算的，时刻漂移直接污染统计）。
+   * 宿主未提供 `time`（旧版本/测试构造的事件）时才退回处理时刻。
+   *
+   * @param event - 任意携带可选 `time`（epoch 毫秒）的会话事件。
+   * @returns epoch 秒。
+   */
+  private eventTime(event: { time?: number }): number {
+    return typeof event?.time === 'number' && event.time > 0 ? event.time / 1000 : Date.now() / 1000;
   }
 
   private async resolveProject(): Promise<string> {
     if (this.config.project_name) return this.config.project_name;
     const cwd = this.session.header?.cwd || process.cwd();
     return await resolveProject(cwd);
+  }
+
+  /**
+   * 取一个可直接上报的项目名。
+   *
+   * @returns 裁剪进 project 字段上限的项目名；解析结果为空串时返回
+   *   `undefined`——空串会被服务端逐条 400（"between 1 and 1024"），
+   *   而不发这个字段则交给 WakaTime 自己推断。
+   */
+  private async legalProject(): Promise<string | undefined> {
+    const project = clampField(await this.resolveProject(), HEARTBEAT_FIELD_LIMITS.project);
+    return project === '' ? undefined : project;
   }
 
   private async resolveProjectRootCount(): Promise<number> {
