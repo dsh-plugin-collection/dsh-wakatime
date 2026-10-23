@@ -15,6 +15,7 @@ import { FileTracker } from './tracker.js';
 import { HeartbeatCache } from './cache.js';
 import { readWakatimeCfgApiKey, maskApiKey } from './project.js';
 import { createProjectsHandler } from './projects-route.js';
+import { applyBanner } from './build-stamp.js';
 
 export const name = 'dsh-wakatime';
 export const inject = ['sessions'];
@@ -61,6 +62,7 @@ interface SessionState {
 const MAX_BATCH_SIZE = 25;
 
 export function apply(ctx: Context, config: Config): void {
+  console.log(applyBanner('dsh-wakatime', import.meta.url));
   // Check for conflicting plugin: dsh-codetime
   let hasCodetime = false;
   for (const entry of ctx.registry.values()) {
