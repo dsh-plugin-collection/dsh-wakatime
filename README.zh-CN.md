@@ -279,8 +279,10 @@ src/
    插件侧统一在 `src/config-value.ts` 解包并逐类型校验；一旦某字段解不出可用值，
    会回退默认值/现值并列出字段名与形状（不含值）。为什么必须有这层：ref 直接当值用
    时，同一个升级会同时造成 `api_url` → 非法 URL（请求根本没发出）、
-   `heartbeat_interval_ms` → `setInterval(fn, NaN)` 被 Node 当 1ms（实测 1 秒 915 次，
-   冲刷风暴）、`include_*=false` → 对象恒 truthy（关掉的追踪照发）、
+   `heartbeat_interval_ms` → `setInterval(fn, NaN)` 被 Node 当成 1ms（隔离进程里复现过
+   1 秒 915 次；但**宿主日志里从未出现对应警告**，所以这里只断言 Node 的既定行为，
+   不断言它必然在宿主内发生，也不把任何 CPU 数字归因给它——重启并规范化配置之后宿主
+   CPU 仍在 240% 量级，说明瓶颈不在这里）、`include_*=false` → 对象恒 truthy（关掉的追踪照发）、
    `project_name`/`language` → 两个字段整个不发、`cache_limit` → 缓存永不裁剪。
 4. **确认这把 key 真的可用。** 设置页「项目名称」下拉走的是同一把 key：
    候选为空且带 `error` 就是 key 或连通性问题（`API Key 无效` = 服务端回了 401；

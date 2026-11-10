@@ -280,7 +280,7 @@ src/
    falling back to the schema default and warning with the field name and shape (never the
    value). Without that layer, a single upgrade breaks many things at once, all measured:
    `api_url` → illegal URL (the request is never even issued), `heartbeat_interval_ms` →
-   `setInterval(fn, NaN)`, which Node treats as 1 ms (915 fires/second observed),
+   `setInterval(fn, NaN)`, which Node coerces to a 1 ms delay (reproduced in isolation: 915 fires/s; the corresponding Node warning was never seen inside the host, so no CPU figure is attributed to it),
    `include_*=false` → truthy object (tracking you disabled keeps reporting),
    `project_name` / `language` → both fields silently dropped from payloads,
    `cache_limit` → the cache is never trimmed.

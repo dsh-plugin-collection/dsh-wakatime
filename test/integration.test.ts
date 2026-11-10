@@ -1423,7 +1423,8 @@ describe('Plugin wiring (apply)', () => {
     // 由 cosmokit 以 `Object.freeze({ get: () => value, [write]: … })` 交给 apply()。
     // 旧代码把 config 原样展开给 runtime 并直接当值读，于是同一次升级里同时发生：
     //   api_url  → `${obj}/api/v1` 非法 → new URL 抛 Invalid URL，请求根本没发出；
-    //   interval → setInterval(fn, 对象) → Node 当 NaN→1ms（实测 1 秒 915 次）；
+    //   interval → setInterval(fn, 对象) → Node 把非法 delay 当 1ms（隔离复现 1 秒 915 次；
+    //     宿主内未观测到该警告，故不断言其发生，也不据此归因 CPU）；
     //   include_user_messages=false → 对象恒 truthy → 关掉的追踪照发；
     //   project_name / language → 非字符串 → 两个字段整个不发；
     //   cache_limit → `n > 对象` 恒 false → 缓存永不裁剪。

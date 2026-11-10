@@ -14,7 +14,11 @@
  * - `api_url` 是对象 → `` `${api_url}/api/v1` `` 拼出非法 URL → `new URL()` 直接
  *   抛 `Invalid URL`，请求根本没发出去。
  * - `heartbeat_interval_ms` 是对象 → `setInterval(fn, NaN)` → Node 把 delay 当 1ms
- *   （实测 1 秒触发 915 次，并打 "Timeout duration was set to 1"）→ 冲刷风暴。
+ *   （Node 侧行为在隔离进程复现过：delay 非数字 → 1 秒触发 915 次并打
+ *   "Timeout duration was set to 1"）。注意证据强度：宿主进程日志里从未出现该警告，
+ *   所以这里只断言「按 1ms 跑」是 Node 对非法 delay 的既定行为，不断言它必然在宿主内发生，
+ *   也不把任何 CPU 数字归因给它——重启并规范化配置后宿主 CPU 仍在 240% 量级，
+ *   说明瓶颈不在这里。
  * - `include_*` 是对象 → truthy → **设置里的 false 被无视**，该关的追踪照发。
  * - `project_name` / `language` 是对象 → 上报时这两个字段被当成空值整个不发
  *   → 数据落进"无项目 / 无语言"。
