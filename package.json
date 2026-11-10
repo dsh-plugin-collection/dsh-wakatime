@@ -25,10 +25,10 @@
     "dsh": ">=0.1.7-rc.2 <0.2.0-0 || >=0.2.0-rc.2 <0.3.0-0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node build.mjs",
+    "build": "node build.mjs",
     "clean": "rm -rf lib",
     "watch": "tsc --watch",
-    "prepare": "tsc -p tsconfig.json && node build.mjs",
+    "prepare": "node build.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -64,6 +64,7 @@
     "@types/node": "^26.2.0",
     "@types/react": "^19.3.0",
     "esbuild": "^0.28.2",
+    "typescript": "^5.9.3",
     "vitest": "^4.1.11"
   },
   "dsh": {

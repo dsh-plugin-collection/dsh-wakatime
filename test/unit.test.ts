@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { resolveLanguage } from '../src/language.js';
-import { resolveProject, resolveBranch, resolveProjectRootCount, resolveDependencies, readWakatimeCfgApiKey, maskApiKey, clearResolveCaches } from '../src/project.js';
+import { resolveProject, resolveBranch, resolveProjectRootCount, resolveDependencies, readWakatimeCfgApiKey, readWakatimeCfgProxy, maskApiKey, clearResolveCaches } from '../src/project.js';
+import { resolveProxyUrl, shouldUseProxy } from '../src/wakatime.js';
 import { calculateWriteDiff, calculateEditDiff } from '../src/diff.js';
 import { clampEntity, clampField } from '../src/types.js';
 import { classifyShellCommand, firstRealCommand } from '../src/category.js';
+import { CONFIG_DEFAULTS, normalizeConfig, normalizeDocument, plainValue } from '../src/config-value.js';
+import type { Config } from '../src/index.js';
 import { FileTracker } from '../src/tracker.js';
 import { secretSlotSet, SETTINGS_NAMESPACE_CANDIDATES } from '../src/client/mirror.js';
 import type { MirrorSnapshotLike } from '../src/client/mirror.js';
@@ -221,6 +224,118 @@ describe('category.ts shell classification', () => {
   });
 });
 
+describe('config-value.ts', () => {
+  /** 复刻 cosmokit 的 volatile ref 形状（私有 write symbol 外部拿不到，鸭子类型即可）。 */
+  const ref = (value: unknown) => {
+    const write = Symbol('write');
+    return Object.freeze({ get: () => value, [write]: () => {} });
+  };
+
+  describe('plainValue', () => {
+    it('unwraps a volatile ref and nested refs', () => {
+      expect(plainValue(ref('a'))).toBe('a');
+      expect(plainValue(ref(ref(120000)))).toBe(120000);
+    });
+
+    it('passes ordinary values through untouched', () => {
+      expect(plainValue('x')).toBe('x');
+      expect(plainValue(undefined)).toBeUndefined();
+      expect(plainValue({ a: 1 })).toEqual({ a: 1 });
+    });
+
+    it('gives up (returns undefined) when a ref’s get() throws', () => {
+      expect(plainValue({ get: () => { throw new Error('host state'); } })).toBeUndefined();
+    });
+  });
+
+  describe('normalizeConfig', () => {
+    it('turns every volatile field into a usable bare value', () => {
+      const { config, degraded } = normalizeConfig({
+        api_key: ref('waka_x'),
+        api_url: ref('https://wm.internal'),
+        heartbeat_interval_ms: ref(90000),
+        project_name: ref('p'),
+        language: ref('TypeScript'),
+        app_entity: ref('Terminal'),
+        include_tool_calls: ref(true),
+        include_user_messages: ref(false),
+        include_assistant_messages: ref(true),
+        cache_heartbeats: ref(false),
+        cache_limit: ref(500),
+        debug: ref(true),
+      });
+      expect(config.api_url).toBe('https://wm.internal');
+      expect(config.heartbeat_interval_ms).toBe(90000);
+      expect(config.include_user_messages).toBe(false);
+      expect(config.cache_limit).toBe(500);
+      expect(degraded).toEqual([]);
+    });
+
+    it('falls back to defaults and reports the shape for unusable values', () => {
+      const { config, degraded } = normalizeConfig({
+        api_url: { __jsExpr: 'x' },
+        heartbeat_interval_ms: ref('120000'),
+        include_user_messages: ref({ nested: true }),
+        cache_limit: 999999,
+      });
+      expect(config.api_url).toBe(CONFIG_DEFAULTS.api_url);
+      expect(config.heartbeat_interval_ms).toBe(CONFIG_DEFAULTS.heartbeat_interval_ms);
+      expect(config.include_user_messages).toBe(CONFIG_DEFAULTS.include_user_messages);
+      expect(config.cache_limit).toBe(CONFIG_DEFAULTS.cache_limit);
+      const fields = degraded.map((d) => d.field).sort();
+      expect(fields).toEqual(['api_url', 'cache_limit', 'heartbeat_interval_ms', 'include_user_messages']);
+    });
+
+    it('never lets a bogus api_url through (Invalid URL would kill every send)', () => {
+      for (const bad of ['wakatime.com', 'ftp://x', 'not a url', '/api', '  ']) {
+        const { config, degraded } = normalizeConfig({ api_url: bad });
+        expect(config.api_url).toBe(CONFIG_DEFAULTS.api_url);
+        expect(degraded.some((d) => d.field === 'api_url')).toBe(true);
+      }
+      // 带尾斜杠的合法值应被归一，且不算降级
+      const ok = normalizeConfig({ api_url: 'https://wm.internal/' });
+      expect(ok.config.api_url).toBe('https://wm.internal');
+      expect(ok.degraded).toEqual([]);
+    });
+
+    it('reports shapes without leaking values', () => {
+      const { degraded } = normalizeConfig({ api_key: ref({ secret: 'waka_LEAK' }) });
+      const line = JSON.stringify(degraded);
+      expect(line).not.toContain('waka_LEAK');
+      expect(degraded.find((d) => d.field === 'api_key')?.shape).toContain('object');
+    });
+  });
+
+  describe('normalizeDocument', () => {
+    const current: Config = { ...CONFIG_DEFAULTS, api_key: 'waka_keep', api_url: 'https://keep.example' };
+
+    it('only touches fields the document actually submitted', () => {
+      const { partial } = normalizeDocument({ project_name: ref('newproj') }, current);
+      expect(partial).toEqual({ project_name: 'newproj' });
+    });
+
+    it('keeps the current value when the submitted one is unusable', () => {
+      const { partial, degraded } = normalizeDocument({ api_url: ref({}), debug: 'yes' }, current);
+      expect(partial.api_url).toBeUndefined();
+      expect(partial.debug).toBeUndefined();
+      expect(degraded.map((d) => d.field).sort()).toEqual(['api_url', 'debug']);
+    });
+
+    it('treats an explicitly blank api_key as a real submission (clear, not absent)', () => {
+      // 空串与字段缺席语义不同：缺席=没改，空串=用户主动清空。
+      const { partial } = normalizeDocument({ api_key: '' }, current);
+      expect(partial.api_key).toBe('');
+    });
+  });
+
+  it('keeps CONFIG_DEFAULTS aligned with the exported schema', async () => {
+    // Schema 的 .default() 取自这份常量，字段集合一旦漂移就有字段拿不到默认值
+    // （新增字段忘了写默认 = 运行时 undefined，正是本次要根除的那类故障）。
+    const { Config: SchemaConfig } = await import('../src/index.js');
+    expect(Object.keys((SchemaConfig as any).dict ?? {}).sort()).toEqual(Object.keys(CONFIG_DEFAULTS).sort());
+  });
+});
+
 describe('types.ts field clamps', () => {
   describe('clampField', () => {
     it('truncates to the limit with an ellipsis marker', () => {
@@ -287,6 +402,42 @@ describe('project.ts', () => {
     });
   });
 
+  describe('readWakatimeCfgProxy', () => {
+    const withHome = (content: string | null, run: () => void): void => {
+      const homeDir = join(tmpdir(), 'wakatime-proxy-home-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+      mkdirSync(homeDir, { recursive: true });
+      if (content !== null) writeFileSync(join(homeDir, '.wakatime.cfg'), content);
+      const originalHome = process.env.HOME;
+      process.env.HOME = homeDir;
+      try {
+        run();
+      } finally {
+        process.env.HOME = originalHome;
+        rmSync(homeDir, { recursive: true, force: true });
+      }
+    };
+
+    it('reads the proxy the same way wakatime-cli does', () => {
+      withHome('[settings]\nproxy = http://proxy.example:3128\n', () => {
+        expect(readWakatimeCfgProxy()).toBe('http://proxy.example:3128');
+      });
+    });
+
+    it('returns empty string when the key or the file is missing', () => {
+      withHome('[settings]\napi_key = waka_test123\n', () => {
+        expect(readWakatimeCfgProxy()).toBe('');
+      });
+      withHome(null, () => {
+        expect(readWakatimeCfgProxy()).toBe('');
+      });
+    });
+
+    it('is case-insensitive and tolerates spacing', () => {
+      withHome('[Settings]\n  Proxy   =   http://p:1  \n', () => {
+        expect(readWakatimeCfgProxy()).toBe('http://p:1');
+      });
+    });
+  });
   describe('readWakatimeCfgApiKey', () => {
     it('should return empty string when file does not exist', () => {
       // Temporarily override HOME
@@ -669,5 +820,47 @@ describe('tracker.ts GenAI metrics', () => {
     const pending = tracker.getPending();
     expect(pending[0].category).toBe('communicating');
     expect(pending[0].entity).toBe('dsh-session-sess-abc123');
+  });
+});
+
+
+describe('proxy resolution (wakatime.ts)', () => {
+  describe('resolveProxyUrl', () => {
+    it('prefers the process environment over ~/.wakatime.cfg', () => {
+      expect(resolveProxyUrl({ HTTPS_PROXY: 'http://env:1' }, 'http://cfg:2')).toBe('http://env:1');
+      expect(resolveProxyUrl({ http_proxy: 'http://env-lower:1' }, 'http://cfg:2')).toBe('http://env-lower:1');
+    });
+
+    it('falls back to the cfg proxy when no env var is set', () => {
+      // 这正是插件与 wakatime-cli 行为不一致的现场：cfg 里有 proxy，env 里没有，
+      // 旧实现只有插件不走代理，于是同机上它是唯一间歇连不通的那条链路。
+      expect(resolveProxyUrl({}, 'http://cfg:2')).toBe('http://cfg:2');
+      expect(resolveProxyUrl({ NO_PROXY: 'x' }, '  http://cfg:2  ')).toBe('http://cfg:2');
+    });
+
+    it('returns null when neither source has one', () => {
+      expect(resolveProxyUrl({}, '')).toBeNull();
+      expect(resolveProxyUrl({ HTTPS_PROXY: '   ' }, '  ')).toBeNull();
+    });
+  });
+
+  describe('shouldUseProxy', () => {
+    it('is a no-op without a proxy', () => {
+      expect(shouldUseProxy(null, 'wakatime.com', '')).toBe(false);
+      expect(shouldUseProxy('', 'wakatime.com', '')).toBe(false);
+    });
+
+    it('honours *, exact hosts and suffix forms', () => {
+      expect(shouldUseProxy('http://p:1', 'wakatime.com', '*')).toBe(false);
+      expect(shouldUseProxy('http://p:1', 'wakatime.com', 'wakatime.com')).toBe(false);
+      expect(shouldUseProxy('http://p:1', 'a.wakatime.com', '.wakatime.com')).toBe(false);
+      expect(shouldUseProxy('http://p:1', 'a.wakatime.com', 'wakatime.com')).toBe(false);
+      expect(shouldUseProxy('http://p:1', 'other.com', 'wakatime.com')).toBe(true);
+    });
+
+    it('ignores empty entries produced by trailing commas', () => {
+      expect(shouldUseProxy('http://p:1', 'a.com', 'a.com,')).toBe(false);
+      expect(shouldUseProxy('http://p:1', 'b.com', '')).toBe(true);
+    });
   });
 });

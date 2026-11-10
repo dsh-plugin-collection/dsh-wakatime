@@ -225,19 +225,21 @@ src/
 
 ## Development and packaging
 
-### Three version-sensitive wiring points (still true on 0.2.1)
+### Four version-sensitive wiring points (still true on 0.2.2)
 
 | Wiring point | Rule | Source |
 |---|---|---|
 | Key of the `plugins.bundle.config` WebUI slot | The **plugin package name** (`name` in `package.json`), not the settings namespace and not the profile entry id; a mismatched key leaves the bundle page without its config card | Host `dsh-client-ui-plugin-manager/lib/types/client/slot-contract.d.ts:149` ("keyed by the bundle's package name"); the render site `lib/client.js:2964` passes `{ entryKey: pkg.name }` |
 | How `@deepseek-ai/dsh-client-ui-primitives` is referenced | Must stay **external**, never bundled into `lib/client.js`: the host web module table keeps that id resident and official client packages do `require("@deepseek-ai/dsh-client-ui-primitives")`; bundling it copies the whole icon set | Host `dsh-web-frontend/dist/assets/index-*.js` module table contains the id; `dsh-client-ui-plugin-manager/lib/client.js:10`; this repo `build.mjs:28` |
-| Automatic settings-page projection | Depends on `.volatile()` on the plugin's Config fields; on 0.2.1 the projection still lives in host `dsh-app-boot`, which writes `volatile` into the schema's `x-cordis` | This repo `src/index.ts:37-47`; host `dsh-app-boot/lib/index.js:2606` (`validateVolatilePlacement`) and the projection branch from `:2735` |
+| Automatic settings-page projection | Depends on `.volatile()` on the plugin's Config fields; the projection lives in host `dsh-app-boot`, which writes `volatile` into the schema's `x-cordis` | This repo `src/index.ts`; host `dsh-app-boot/lib/index.js` (`validateVolatilePlacement`) and its projection branch |
+| `.volatile()` fields reach the plugin as **ref objects**, not values | Every volatile field handed to `apply()` is `Object.freeze({ get: () => value, [write]: … })`, so it **must be unwrapped before use** — the host's own `dsh-settings` does exactly that (`plainConfig`). Using it as a value fails in several ways at once: `api_url` builds an illegal URL, `heartbeat_interval_ms` is treated as 1 ms by Node, booleans become permanently truthy, string fields drop out of payloads, and `cache_limit` comparisons are always false. This plugin normalizes everything in `src/config-value.ts`, at both the entry and the settings-document layer | Host `cosmokit/lib/index.js` (`createVolatile` / `isVolatile`); `dsh-settings/lib/index.js` (`if (isVolatile(value)) return plainConfig(value.get())`); reproduced identically on 0.2.1 and 0.2.2 |
 
 ### Dependencies and host version drift
 
 | Item | Note |
 |---|---|
 | pnpm is the only package manager | The repo ships `pnpm-lock.yaml` (with `pnpm-workspace.yaml`) and has no `package-lock.json`; install and refresh the lock with pnpm |
+| `typescript` must be an explicit devDependency | `scripts.build` / `prepare` / `watch` all invoke `tsc`. Before 11-10 it was **in neither devDependencies nor the lockfile** (grep hit count 0): builds worked only because the environment happened to carry a foreign tsc, so a clean clone, another machine, or `pnpm install --frozen-lockfile` fails — and `prepare` fails during install itself. It is now declared as `typescript: ^5.9.0` (matching sibling plugins in this workspace), and the build runs the local `node_modules/.bin/tsc` instead of `npx tsc`. That substitution matters: with the dependency missing, npx quietly installs the deprecated same-named package `tsc@2.0.4`, which only prints "This is not the tsc command you are looking for" and leaves `lib/` in its previous state — a broken build environment disguised as a successful build |
 | Development dependencies are exact pins | devDependencies pin `@deepseek-ai/dsh-agent` / `@deepseek-ai/dsh-session` / `@deepseek-ai/dsh-settings` / `@deepseek-ai/dsh-client-ui-primitives` all to `0.2.1-rc.2` (`@deepseek-ai/cordis` `^4.0.5` and `@deepseek-ai/schemastery` `^3.18.5` stay ranges). These are development-time values, not the published contract: the runtime gate reads `engines.dsh` only, and the outward contract is the peer list above. `@deepseek-ai/dsh-client-ui-primitives` is an explicit devDependency for development resolution only and must still stay external in the bundle (see the table above) |
 | Host packages pin their own peers | From 0.2.1 every host package pins its `@deepseek-ai/dsh-*` peers to one exact version (`@deepseek-ai/cordis` stays a `~4.0.5` range). That is internal to the host monorepo; plugins must not copy it, see "write peerDependencies as ranges" above |
 | `@deepseek-ai/dsh-invariants` is discontinued | Last published version is `0.2.0-rc.2` and the 0.2.1-rc.2 host package set has no such package; drop it from devDependencies after an upgrade if it lingers |
@@ -261,30 +263,55 @@ src/
 ### Heartbeats not sending
 
 1. **Look at the local cache before the logs.** `~/.dsh/wakatime/heartbeat-cache.jsonl`
-   is only written when sending fails and is drained when sending succeeds. If it sits
-   pinned at the Cache Limit, sending is failing continuously — and the oldest heartbeats
-   are being trimmed away, so that activity is already unrecoverable.
-2. **Read the warnings; debug is not required.** Failures are always warned with a reason:
+   is only written when sending fails and is drained when sending succeeds. If it keeps
+   growing or sits pinned at the Cache Limit, sending is failing continuously — and the
+   oldest heartbeats are being trimmed away, so that activity is already unrecoverable.
+   A cache **far above** the Cache Limit is its own signal: `cache_limit` is not reaching
+   the code as a number (see step 3).
+2. **Read the warnings; debug is not required.** Failures are always warned with a reason,
+   written to **both** the host logger and the console (this host does not forward
+   `ctx.logger` to the captured stdout, so logger-only warnings are effectively no logs —
+   that is exactly why two separate silent outages went unnoticed):
    `上报失败…` (transport / auth / rate limit), `N/M 条心跳被 WakaTime 逐条拒绝并已丢弃…`
    (invalid payload), `cache flush failed…` (the backfill cannot send either).
-   Note that some hosts do not forward `ctx.logger` output to the captured stdout —
-   where plugin logs land is host behaviour.
-3. **Confirm this key actually works.** The "Project name" dropdown in the settings page
+3. **After a host upgrade, look first for "配置字段不是可用值" warnings.** Fields marked
+   `.volatile()` reach the plugin as cosmokit refs — `Object.freeze({ get, [write] })`,
+   i.e. **objects** — and `src/config-value.ts` unwraps and type-checks every one of them,
+   falling back to the schema default and warning with the field name and shape (never the
+   value). Without that layer, a single upgrade breaks many things at once, all measured:
+   `api_url` → illegal URL (the request is never even issued), `heartbeat_interval_ms` →
+   `setInterval(fn, NaN)`, which Node coerces to a 1 ms delay (reproduced in isolation: 915 fires/s; the corresponding Node warning was never seen inside the host, so no CPU figure is attributed to it),
+   `include_*=false` → truthy object (tracking you disabled keeps reporting),
+   `project_name` / `language` → both fields silently dropped from payloads,
+   `cache_limit` → the cache is never trimmed.
+4. **Confirm this key actually works.** The "Project name" dropdown in the settings page
    uses the same key: empty candidates plus an `error` means a key or connectivity problem
    (`API Key 无效` = the server returned 401; `未配置 WakaTime API Key` = none of the three
    sources has a usable value). Resolution order is config layer → `WAKATIME_API_KEY` →
-   `~/.wakatime.cfg`, and all three only accept a **non-empty string**: a wrong shape
-   (e.g. an unevaluated `!!js` node handed over as an object) is ignored, falls through,
-   and is warned with a shape summary.
-4. **Check connectivity to WakaTime.** The plugin honours the `HTTPS_PROXY` / `HTTP_PROXY`
-   environment variables only — it does not read `proxy` from `~/.wakatime.cfg`.
-5. **If behaviour does not match the code, check the build fingerprint.** The log line
+   `~/.wakatime.cfg`, and all three only accept a **non-empty string**: a wrong shape is
+   ignored, falls through, and is warned with a shape summary.
+5. **Check connectivity to WakaTime, and note the proxy precedence.** Outbound proxy is
+   resolved as `HTTPS_PROXY` / `HTTP_PROXY` env vars → `proxy` under `[settings]` in
+   `~/.wakatime.cfg` (the same source wakatime-cli uses); `NO_PROXY` accepts `*`, exact
+   hosts and `.suffix` entries. Why the plugin reads the cfg at all: on this machine
+   curl-direct, curl-via-proxy and node-direct were all 20/20 fine, yet the plugin
+   intermittently failed with `fetch failed (cause: ETIMEDOUT)` — it was the only link on
+   the box not using the proxy the user had configured. Network diagnostics now include
+   the `cause` (ECONNRESET / ETIMEDOUT / ENOTFOUND …) instead of a bare `fetch failed`.
+6. **If behaviour does not match the code, check the build fingerprint.** The log line
    `apply called; artifact mtime=… pid=…` says exactly which build this process loaded.
    Hot reload can leave old fibers still sending with pre-fix code — restart DSH fully.
-6. **Payload lengths are hard-validated.** `entity` ≤ 2083, `project` / `branch` ≤ 1024,
+7. **Payload lengths are hard-validated.** `entity` ≤ 2083, `project` / `branch` ≤ 1024,
    and empty strings are rejected as well. The plugin clamps before sending; a clamped
    `entity` ends with `...`. If per-item rejections still appear, some field is outside the
    clamping coverage — paste the server reason from the warning into an issue.
+8. **A plugin key no longer reads your own data back.** Since 2026-10 WakaTime answers
+   `/users/current`, `/users/current/projects` and `/users/current/heartbeats` with
+   `403 API Keys are only for plugins, use your personal oauth token` while
+   **`heartbeats.bulk` still accepts the plugin key**. Two consequences: the "Project name"
+   dropdown stays empty (an upstream policy change, not an auth bug in this plugin), and a
+   403 on a read endpoint must not be mistaken for a dead key — judge the key by the write
+   endpoint or by this plugin's failure warnings.
 
 ### Shell category mapping
 

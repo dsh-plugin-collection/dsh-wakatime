@@ -14,7 +14,8 @@ import type { WakaTimeHeartbeat } from './types.js';
 import { WakaTimeClient } from './wakatime.js';
 import { FileTracker } from './tracker.js';
 import { HeartbeatCache } from './cache.js';
-import { readWakatimeCfgApiKey, maskApiKey } from './project.js';
+import { readWakatimeCfgApiKey, readWakatimeCfgProxy, maskApiKey } from './project.js';
+import { CONFIG_DEFAULTS, NUMBER_RANGES, normalizeConfig, normalizeDocument, plainValue, type DegradedField } from './config-value.js';
 import { createProjectsHandler } from './projects-route.js';
 import { applyBanner } from './build-stamp.js';
 
@@ -25,6 +26,9 @@ export const inject = ['sessions'];
  * 0.2.0 配置迁移：`Config` 用 `.volatile()` 标记用户可调字段，
  * 内核自动把 Config 投影成设置页（ns = Loader 条目 id = `dsh-wakatime`）。
  * 不再需要 `ctx.settings.register()`（该 API 在 0.1.7 已删除）。
+ *
+ * 注意：`.volatile()` 意味着宿主把字段以 volatile ref **对象**交给 apply()，
+ * 因此所有使用点都必须先经 config-value.ts 规范化，不能直接当值读。
  */
 export interface Config {
   api_key: string;
@@ -46,19 +50,24 @@ export interface Config {
   debug: boolean;
 }
 
+// 默认值与数值区间都取自 config-value 那一份常量：Schema 的 `.default()` 与
+// 规范化失败时的回退必须是同一个值，两处各写字面量迟早漂移。
+const [INTERVAL_MIN, INTERVAL_MAX] = NUMBER_RANGES.heartbeat_interval_ms as [number, number];
+const [CACHE_MIN, CACHE_MAX] = NUMBER_RANGES.cache_limit as [number, number];
+
 export const Config = Schema.object({
-  api_key: Schema.string().default('').role('secret').volatile(),
-  api_url: Schema.string().default('https://wakatime.com').volatile(),
-  heartbeat_interval_ms: Schema.natural().min(60000).max(300000).default(120000).volatile(),
-  project_name: Schema.string().default('').volatile(),
-  language: Schema.string().default('').volatile(),
-  app_entity: Schema.string().default('Terminal').volatile(),
-  include_tool_calls: Schema.boolean().default(true).volatile(),
-  include_user_messages: Schema.boolean().default(false).volatile(),
-  include_assistant_messages: Schema.boolean().default(false).volatile(),
-  cache_heartbeats: Schema.boolean().default(true).volatile(),
-  cache_limit: Schema.natural().min(10).max(1000).default(100).volatile(),
-  debug: Schema.boolean().default(false).volatile(),
+  api_key: Schema.string().default(CONFIG_DEFAULTS.api_key).role('secret').volatile(),
+  api_url: Schema.string().default(CONFIG_DEFAULTS.api_url).volatile(),
+  heartbeat_interval_ms: Schema.natural().min(INTERVAL_MIN).max(INTERVAL_MAX).default(CONFIG_DEFAULTS.heartbeat_interval_ms).volatile(),
+  project_name: Schema.string().default(CONFIG_DEFAULTS.project_name).volatile(),
+  language: Schema.string().default(CONFIG_DEFAULTS.language).volatile(),
+  app_entity: Schema.string().default(CONFIG_DEFAULTS.app_entity).volatile(),
+  include_tool_calls: Schema.boolean().default(CONFIG_DEFAULTS.include_tool_calls).volatile(),
+  include_user_messages: Schema.boolean().default(CONFIG_DEFAULTS.include_user_messages).volatile(),
+  include_assistant_messages: Schema.boolean().default(CONFIG_DEFAULTS.include_assistant_messages).volatile(),
+  cache_heartbeats: Schema.boolean().default(CONFIG_DEFAULTS.cache_heartbeats).volatile(),
+  cache_limit: Schema.natural().min(CACHE_MIN).max(CACHE_MAX).default(CONFIG_DEFAULTS.cache_limit).volatile(),
+  debug: Schema.boolean().default(CONFIG_DEFAULTS.debug).volatile(),
 });
 
 interface SessionState {
@@ -69,39 +78,56 @@ interface SessionState {
 /**
  * 把任意来源的 api_key 收成可用字符串：非字符串、空串、纯空白都算「没给」。
  *
- * 必须这样收窄而不是 `value || fallback`：loader 可能把未求值的 `!!js` 节点
- * 原样交给插件（形状是对象），对象是 truthy，会被误当成有效 key 用掉，
- * 结果 Authorization 变成 base64("[object Object]:")，服务端恒 401。
+ * 只用于 api_key 这一条链（配置层 → 环境变量 → ~/.wakatime.cfg），因为它有
+ * 两级外部兜底；其余字段的形状校验统一在 config-value.ts。
  *
  * @param value - 配置层/环境变量/配置文件的原始值。
  * @returns 可直接用于 Basic 凭据的 key，不可用时为空串。
  */
 function usableApiKey(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : '';
+  const raw = plainValue(value);
+  return typeof raw === 'string' ? raw.trim() : '';
 }
 
 /** 该层是否【根本没提供】api_key（缺席/空值），用于区分「没给」与「给了但不可用」。 */
 function isAbsentApiKey(value: unknown): boolean {
-  return value === undefined || value === null || value === '';
+  const raw = plainValue(value);
+  return raw === undefined || raw === null || raw === '';
 }
 
 /**
- * 描述一个不可用取值的形状，供日志定位配置层问题。
+ * warn 级消息的统一出口：宿主 logger + console 双写。
  *
- * 只报类型与键名，绝不报值：这个槽位按 schema 声明是 secret，日志会被
- * 转发到插件日志汇，摘要外泄就是凭据外泄。
+ * 本宿主的 `ctx.logger` 输出不进 stdout/stderr 捕获文件（实测 dsh-web.log 里
+ * 只有 console.* 的行）。这不是洁癖：插件两次「上报静默中断」（一次一周、
+ * 一次四小时）之所以没人发现，就是因为唯一的失败线索落在了看不见的通道里。
  *
- * @param value - 被判定为不可用的原始值。
- * @returns 一行形状摘要。
+ * @param ctx - 插件上下文。
+ * @param message - 已带 `dsh-wakatime:` 前缀的正文。
  */
-function describeShape(value: unknown): string {
-  if (value === null) return 'null';
-  if (Array.isArray(value)) return `array(${value.length})`;
-  if (typeof value === 'object') {
-    const keys = Object.keys(value as Record<string, unknown>);
-    return `object{${keys.slice(0, 4).join(',')}${keys.length > 4 ? ',…' : ''}}`;
-  }
-  return `${typeof value}(${String(value).length})`;
+function warnOut(ctx: Context, message: string): void {
+  ctx.logger.warn(message);
+  console.warn(`[${name}] ${message}`);
+}
+
+/**
+ * 逐字段规范化失败/回退的统一告警。
+ *
+ * 宿主 logger 之外再走一次 console.warn：本宿主的 `ctx.logger` 输出不进
+ * stdout/stderr 捕获文件（实测 dsh-web.log 只有 console.* 的行），而「配置被
+ * 静默降级」恰恰是必须被看见的那类事件——本插件两次断流（一次一周、一次四小时）
+ * 都没留下任何可见痕迹，原因就在这里。
+ *
+ * @param ctx - 插件上下文。
+ * @param degraded - 需要回退的字段清单。
+ * @param source - 触发来源（apply / settings 文档），用于定位是哪一层给的坏值。
+ */
+function reportDegraded(ctx: Context, degraded: DegradedField[], source: string): void {
+  if (degraded.length === 0) return;
+  const summary = degraded.map((d) => `${d.field}=${d.shape}`).join(', ');
+  const message = `dsh-wakatime: ${source} 有 ${degraded.length} 个配置字段不是可用值，已按默认值/现值回退：${summary}`;
+  ctx.logger.warn(message);
+  console.warn(`[${name}] ${message}`);
 }
 
 // Maximum heartbeats per batch (WakaTime limit)
@@ -118,28 +144,33 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
   if (hasCodetime) {
-    ctx.logger.warn('dsh-wakatime: 检测到 dsh-codetime 已安装，二者都是 telemetry backend，建议只保留一个');
+    warnOut(ctx, 'dsh-wakatime: 检测到 dsh-codetime 已安装，二者都是 telemetry backend，建议只保留一个');
   }
 
+  // 先把整份配置规范化：`.volatile()` 字段到这里还是 cosmokit 的 ref 对象
+  // （`Object.freeze({ get, [write] })`），直接当值用会让每个字段各自以一种
+  // 难看的形态失效（api_url → Invalid URL、interval → 1ms 风暴、include_* →
+  // 恒真、project_name/language → 字段整个不发、cache_limit → 永不裁剪）。
+  // 详见 config-value.ts 顶部的实测清单。
+  const { config: resolved, degraded } = normalizeConfig(config);
+  reportDegraded(ctx, degraded, 'apply');
+
   // API key 解析优先级：
-  // 1. Config from cordis.patch.yml (already resolved)
+  // 1. Config from cordis.patch.yml（已规范化为裸值）
   // 2. Environment variable WAKATIME_API_KEY
   // 3. ~/.wakatime.cfg api_key
   //
   // 三层都必须【真的是非空字符串】才算命中。旧写法 `let apiKey = config.api_key`
-  // 只看 truthy：0.2.x 的 loader 会把未求值的 `!!js` 节点原样保留成
-  // `{ __jsExpr: '…' }` 这样的对象（dsh-settings 里的 isExpression() 就在处理
-  // 这种「整块保留」的节点），而对象是 truthy —— 于是它被当成有效 key，
-  // 既跳过了后面两级兜底，又让 Authorization 变成 base64("[object Object]:")。
-  // 服务端恒 401，而 401 会写 authFailRetryAfter（5 分钟内直接跳过发送），
-  // 心跳全部只进本地缓存、再被 cache_limit 截断丢弃：用户侧表现为
-  // 「WakaTime 上的时间凭空消失」，且旧代码在 debug 关闭时一个字都不打。
+  // 只看 truthy，而 ref 对象是 truthy —— 于是它被当成有效 key：既跳过了后面两级
+  // 兜底，又让 Authorization 变成 base64("[object Object]:")。服务端恒 401，
+  // 401 还会写 authFailRetryAfter（5 分钟内直接跳过发送），心跳全部只进本地缓存、
+  // 再被 cache_limit 截断丢弃：用户侧表现为「WakaTime 上的时间凭空消失」，
+  // 而 debug 关闭时旧代码一个字都不打。
   const rawConfigKey = (config as unknown as { api_key?: unknown }).api_key;
   let apiKey = usableApiKey(rawConfigKey);
   if (!apiKey && !isAbsentApiKey(rawConfigKey)) {
-    ctx.logger.warn(
-      `dsh-wakatime: 配置层给出的 api_key 不是可用字符串（${describeShape(rawConfigKey)}），已忽略该层并继续回退`,
-    );
+    // 形状已由 reportDegraded 汇总，这里只补一句「本层被跳过、正在回退」。
+    warnOut(ctx, 'dsh-wakatime: 配置层的 api_key 不是可用字符串，已忽略该层并继续回退');
   }
   if (!apiKey) {
     apiKey = usableApiKey(process.env.WAKATIME_API_KEY);
@@ -149,7 +180,7 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   if (!apiKey) {
-    ctx.logger.warn('dsh-wakatime: 未配置 API Key，请在 cordis.patch.yml、环境变量 WAKATIME_API_KEY 或 ~/.wakatime.cfg 中设置');
+    warnOut(ctx, 'dsh-wakatime: 未配置 API Key，请在 cordis.patch.yml、环境变量 WAKATIME_API_KEY 或 ~/.wakatime.cfg 中设置');
     return;
   }
 
@@ -157,14 +188,38 @@ export function apply(ctx: Context, config: Config): void {
    * 运行时配置单例：WebUI 设置更新经 settings/document-updated 事件原地合并进同一对象，
    * client / cache / tracker / 各事件处理器都持有这个引用 —— 除心跳间隔
    * 需要重建定时器外，其余改动即时生效。
+   *
+   * 必须从 `resolved`（规范化后）展开，而不是原样 `config`：原对象里每个
+   * `.volatile()` 字段还是 ref，谁读谁坏。
    */
-  const runtime: Config = { ...config, api_key: apiKey };
+  const runtime: Config = { ...resolved, api_key: apiKey };
 
-  if (runtime.debug) {
-    ctx.logger.info(`dsh-wakatime: loaded with API key ${maskApiKey(apiKey)}`);
-  }
+  /**
+   * debug 模式的输出出口。
+   *
+   * 设置项写着「输出详细日志到 DSH 控制台」，而本宿主的 `ctx.logger` 不进
+   * stdout/stderr 捕获文件——只调 logger 等于这个开关根本没用，所以 debug
+   * 下的诊断同时走 console。
+   *
+   * @param message - 已带 `dsh-wakatime:` 前缀的正文。
+   */
+  const debugLog = (message: string): void => {
+    if (!runtime.debug) return;
+    ctx.logger.info(message);
+    console.log(`[${name}] ${message}`);
+  };
 
-  const client = new WakaTimeClient(runtime);
+  debugLog(`dsh-wakatime: loaded with API key ${maskApiKey(apiKey)}`);
+
+  /**
+   * 交给客户端的配置：runtime 之外补上 `~/.wakatime.cfg` 里的代理。
+   *
+   * 每次构造/更新都重读该文件：它由 wakatime-cli 维护，用户改它不需要重启 DSH，
+   * 而文件只有几十字节，读失败也只是"不用 cfg 代理"，不影响环境变量优先级。
+   */
+  const clientConfig = () => ({ ...runtime, cfg_proxy: readWakatimeCfgProxy() });
+
+  const client = new WakaTimeClient(clientConfig());
   const cache = new HeartbeatCache(runtime);
 
   // —— 设置页「项目名称」候选：/api/dsh-wakatime/projects ——
@@ -198,7 +253,7 @@ export function apply(ctx: Context, config: Config): void {
       webCtx.effect(() => () => { offRoute(); });
     });
   } catch (error) {
-    ctx.logger.warn(`dsh-wakatime: 项目候选路由未注册（下拉退化为自由输入）：${(error as Error)?.message ?? error}`);
+    warnOut(ctx, `dsh-wakatime: 项目候选路由未注册（下拉退化为自由输入）：${(error as Error)?.message ?? error}`);
   }
 
   
@@ -243,60 +298,47 @@ export function apply(ctx: Context, config: Config): void {
   /**
    * 用一行 describe 结果校正 runtime。
    *
-   * 注意 describe({ redactSecrets: true }) 对 role('secret') 字段的行为是
-   * 【整个字段被移除】（返回 undefined），而不是替换成占位串：
-   *   redactSecrets() -> walk() 在 `node.meta.role === 'secret'` 时直接 return undefined，
-   *   只把 { path, set } 记进旁路 secrets 数组（dsh-settings/lib/index.js:22-30, 73-89）。
-   * 所以 `v.api_key !== undefined` 这个判断本身就是「用户这次提交了新 key」的正确信号：
-   * 未改动 key 时该字段缺席，不会被读成空值而覆盖掉正在用的 key。
-   * 这里把该意图显式化并加注释，避免后续被"简化"成 `v.api_key || ...`。
+   * 两条纪律：
+   * 1. 缺席的字段保持现值。`describe({ redactSecrets: true })` 对 role('secret')
+   *    字段的行为是【整个字段被移除】（walk() 在 `node.meta.role === 'secret'` 时
+   *    直接 return，只把 { path, set } 记进旁路 secrets 数组，见
+   *    dsh-settings/lib/index.js 的 redactSecrets），所以「字段缺席」正是
+   *    「用户这次没改 key」的正确信号；不能退化成 `v.api_key || ...`，
+   *    因为空串是合法的「用户主动清空」。
+   * 2. 提交来的值先规范化再用。文档层的字段同样可能是 volatile ref 对象，
+   *    直接赋值会让 runtime 从「好值」退化成「坏形状」——那正是 apply() 入口
+   *    要避免的事，合并路径不能开后门。归一化由 config-value.normalizeDocument 统一做，
+   *    不可用的字段保持现值并进 degraded 告警。
    */
   const applyRow = (row: SettingsRow, source: string): void => {
-    const v = (row.value ?? {}) as Partial<Config>;
     const prevInterval = runtime.heartbeat_interval_ms;
+    const { partial, degraded } = normalizeDocument(row.value);
+    reportDegraded(ctx, degraded, source);
 
-    // 逐个字段合并：undefined 表示「本次未提交该字段」，保留 runtime 现值。
-    // api_key 尤其不能退化成 falsy 判断 —— 空串是合法用户输入，而 redacted
-    // 字段是 undefined；两者语义不同，必须用 !== undefined 区分。
-    if (v.api_key !== undefined) {
-      const submitted = usableApiKey(v.api_key);
+    Object.assign(runtime, partial);
+
+    // api_key 的清空回退只在这一处特殊处理：留空 = 「不用文档层的值」，
+    // 而不是「用空 key 去鉴权」（后者会让上报全 401 并触发 5 分钟跳过发送）。
+    if ('api_key' in partial) {
+      const submitted = usableApiKey(partial.api_key);
       if (submitted) {
         runtime.api_key = submitted;
-      } else if (isAbsentApiKey(v.api_key)) {
-        // 用户主动清空：回退到环境变量 / ~/.wakatime.cfg，而不是把上报打死。
+      } else if (isAbsentApiKey(partial.api_key)) {
         runtime.api_key = usableApiKey(process.env.WAKATIME_API_KEY) || usableApiKey(readWakatimeCfgApiKey());
-        ctx.logger.info(`dsh-wakatime: api_key 已被清空，回退到 ${maskApiKey(runtime.api_key) || '无可用 key'}`);
-      } else {
-        // 非字符串（如 loader 交来的未求值 !!js 节点）：写进 runtime 就等于
-        // 用 base64("[object Object]:") 去鉴权，恒 401 且一次失败静默五天。
-        ctx.logger.warn(
-          `dsh-wakatime: 忽略不可用的 api_key 提交值（${describeShape(v.api_key)}），继续使用 ${maskApiKey(runtime.api_key)}`,
-        );
+        debugLog(`dsh-wakatime: api_key 已被清空，回退到 ${maskApiKey(runtime.api_key) || '无可用 key'}`);
       }
+      // 非字符串的情况已由 reportDegraded 报出，partial.api_key 保持现值，无需再处理。
     }
-    if (v.api_url !== undefined) runtime.api_url = v.api_url;
-    if (v.heartbeat_interval_ms !== undefined) runtime.heartbeat_interval_ms = v.heartbeat_interval_ms;
-    if (v.project_name !== undefined) runtime.project_name = v.project_name;
-    if (v.language !== undefined) runtime.language = v.language;
-    if (v.app_entity !== undefined) runtime.app_entity = v.app_entity;
-    if (v.include_tool_calls !== undefined) runtime.include_tool_calls = v.include_tool_calls;
-    if (v.include_user_messages !== undefined) runtime.include_user_messages = v.include_user_messages;
-    if (v.include_assistant_messages !== undefined) runtime.include_assistant_messages = v.include_assistant_messages;
-    if (v.cache_heartbeats !== undefined) runtime.cache_heartbeats = v.cache_heartbeats;
-    if (v.cache_limit !== undefined) runtime.cache_limit = v.cache_limit;
-    if (v.debug !== undefined) runtime.debug = v.debug;
 
-    // client 持有 runtime 引用，重建其内部快照
-    client.updateConfig(runtime);
+    // client 持有配置快照，重建成含最新 cfg 代理的那份
+    client.updateConfig(clientConfig());
     // 心跳间隔变更需要重建在跑定时器，其余字段在事件到达时读 runtime 即时生效
     if (runtime.heartbeat_interval_ms !== prevInterval) {
       restartActiveTimers();
     }
-    if (runtime.debug) {
-      ctx.logger.info(
-        `dsh-wakatime: runtime ${source} (tool=${runtime.include_tool_calls}, user=${runtime.include_user_messages}, ai=${runtime.include_assistant_messages}, debug=${runtime.debug})`,
-      );
-    }
+    debugLog(
+      `dsh-wakatime: runtime ${source} (tool=${runtime.include_tool_calls}, user=${runtime.include_user_messages}, ai=${runtime.include_assistant_messages}, debug=${runtime.debug})`,
+    );
   };
 
   /** 读取本插件命名空间的那一行；describe 不可用或缺行时返回 undefined。 */
@@ -344,13 +386,13 @@ export function apply(ctx: Context, config: Config): void {
   // 由下次冲刷自动重试。
   const flushCacheSafely = (): void => {
     cache.flush(client).catch((error) => {
-      ctx.logger.warn(`dsh-wakatime: cache flush failed, heartbeats kept for retry: ${String(error)}`);
+      warnOut(ctx, `dsh-wakatime: cache flush failed, heartbeats kept for retry: ${String(error)}`);
     });
   };
 
   const flushPendingSafely = (session: Session): void => {
     flushPending(session).catch((error) => {
-      ctx.logger.warn(`dsh-wakatime: pending flush failed: ${String(error)}`);
+      warnOut(ctx, `dsh-wakatime: pending flush failed: ${String(error)}`);
     });
   };
 
@@ -432,7 +474,7 @@ export function apply(ctx: Context, config: Config): void {
         await cache.appendBatch(unpersisted);
       } catch (cacheError) {
         // 磁盘写失败也不能让 rejection 冒泡（fail-loud 会杀死整个 dsh 进程）
-        ctx.logger.warn(`dsh-wakatime: failed to cache heartbeats: ${String(cacheError)}`);
+        warnOut(ctx, `dsh-wakatime: failed to cache heartbeats: ${String(cacheError)}`);
       }
     }
 
@@ -440,20 +482,20 @@ export function apply(ctx: Context, config: Config): void {
       // 无条件 warn（此前只在 debug 下打印，且不打原因）：上报路径一旦持续
       // 失败，缓存会被 enforceLimit 截断成新 100 条，用户侧表现为「时间凭空缺失」，
       // 而日志里一个字都没有——失败原因必须默认可见。
-      ctx.logger.warn(
+      warnOut(ctx, 
         `dsh-wakatime: 上报失败，${unpersisted.length} 条心跳转入缓存重试（本批 ${heartbeats.length} 条，已落库 ${accepted} 条）：${String(failure.error)}`,
       );
     } else if (rejectedPermanent > 0) {
       // 逐条 4xx 的重试必然再失败，只能丢弃；丢弃必须说出来，否则就是静默丢数据。
-      ctx.logger.warn(
+      warnOut(ctx, 
         `dsh-wakatime: ${rejectedPermanent}/${heartbeats.length} 条心跳被 WakaTime 逐条拒绝并已丢弃（重试无效），样例 ${rejectionSample}`,
       );
     } else if (retryable.length > 0) {
-      ctx.logger.warn(
+      warnOut(ctx, 
         `dsh-wakatime: ${retryable.length}/${heartbeats.length} 条心跳被逐条限流或服务端错误退回，已转入缓存重试`,
       );
     } else if (runtime.debug) {
-      ctx.logger.info(`dsh-wakatime: flushed ${accepted} heartbeats`);
+      debugLog(`dsh-wakatime: flushed ${accepted}/${heartbeats.length} heartbeats`);
     }
   };
 
@@ -550,7 +592,7 @@ export function apply(ctx: Context, config: Config): void {
   /** 退出前把每个会话的 pending 心跳与磁盘缓存都冲出去，再按原有语义 exit(0)。 */
   const gracefulShutdown = async () => {
     if (runtime.debug) {
-      ctx.logger.info('dsh-wakatime: process exiting, flushing remaining heartbeats');
+      debugLog('dsh-wakatime: process exiting, flushing remaining heartbeats');
     }
     for (const session of activeSessions) {
       const state = states.get(session);

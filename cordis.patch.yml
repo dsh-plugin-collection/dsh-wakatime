@@ -1,9 +1,10 @@
 - insert:
     - id: dsh-wakatime
       name: 'dsh-wakatime'
-      # 注意：`!!js` 表达式在 bundle 层可能不被求值，插件会收到整块保留的节点
-      # （形状 { __jsExpr: '…' }，是对象）。插件侧已按「只接受非空字符串」解析
-      # api_key 并逐级回退（见 src/index.ts），这里留表达式是为了 env 覆盖的便利。
+      # 订正（11-10）：这里此前写的注释把「插件收到 api_key 是对象」归因于
+      # `!!js` 在 bundle 层不被求值，那是误判。真实机制是：字段标了 `.volatile()`，
+      # cosmokit 就以 `Object.freeze({ get, [write] })` 的 ref 对象交给 apply()，
+      # 0.2.1 与 0.2.2 两代宿主都如此。插件侧的解包与逐类型校验见 src/config-value.ts。
       config:
         api_key: !!js process.env.WAKATIME_API_KEY || ''
         api_url: !!js process.env.WAKATIME_API_URL || 'https://wakatime.com'

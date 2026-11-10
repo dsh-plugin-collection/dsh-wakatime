@@ -382,6 +382,21 @@ describe('Integration Tests', () => {
   });
 
   describe('Error handling', () => {
+    it('surfaces the underlying network cause, not a bare "fetch failed"', async () => {
+      // undici 把真实原因藏在 error.cause 里；只报 `TypeError: fetch failed`
+      // 时，DNS 挂了 / 连接被重置 / 证书被中间盒替换 / 宿主改了全局 fetch
+      // 全都长同一个样，排查只能靠猜。
+      // 端口必须合法：undici 对 1024 以下直接报 "bad port"，那是参数错误而不是
+      // 连接错误，验证不到 cause 链路。用一个未监听的合法端口。
+      const dead = new WakaTimeClient({ api_key: 'test_key_12345', api_url: 'http://127.0.0.1:59997' });
+      const heartbeat: WakaTimeHeartbeat = { entity: '/path/file.ts', type: 'file', time: Date.now() / 1000 };
+      await expect(dead.sendHeartbeats([heartbeat])).rejects.toThrow(/cause: ECONNREFUSED/);
+      // 原始错误仍在链条上，别在"展开成文本"时把现场丢掉
+      await dead.sendHeartbeats([heartbeat]).catch((error: Error & { cause?: unknown }) => {
+        expect(error.cause).toBeDefined();
+      });
+    });
+
     it('fails fast with a clear message when no API key is configured', async () => {
       // 「没配 key」必须和「key 配错」区分开：放过去让服务端回 401，一来日志
       // 会说「API Key 无效，请检查配置」，二来这次 401 写入 authFailRetryAfter，
@@ -1061,7 +1076,8 @@ describe('Plugin wiring (apply)', () => {
       await new Promise(r => setTimeout(r, 25));
     }
     expect(server.lastHeartbeatAuth).toBe(`Basic ${btoa('waka_good_key_0001:')}`);
-    expect(logs().some((m) => m.includes('忽略不可用的 api_key'))).toBe(true);
+    // 统一的降级告警（字段名 + 形状，绝不带值）
+    expect(logs().some((m) => m.includes('配置字段不是可用值') && m.includes('api_key='))).toBe(true);
   });
 
   it('should respect include_* toggles checked at event time', async () => {
@@ -1399,6 +1415,72 @@ describe('Plugin wiring (apply)', () => {
       expect(seenAuth[0]).toBe(`Basic ${Buffer.from('test_key_12345:').toString('base64')}`);
     } finally {
       await new Promise<void>((r) => keyServer.close(() => r()));
+    }
+  });
+
+  it('survives a host that hands every volatile field as a ref object', async () => {
+    // 事故复盘（Nov 10，宿主 0.2.2-rc.1 + node 24）：标记 `.volatile()` 的字段
+    // 由 cosmokit 以 `Object.freeze({ get: () => value, [write]: … })` 交给 apply()。
+    // 旧代码把 config 原样展开给 runtime 并直接当值读，于是同一次升级里同时发生：
+    //   api_url  → `${obj}/api/v1` 非法 → new URL 抛 Invalid URL，请求根本没发出；
+    //   interval → setInterval(fn, 对象) → Node 把非法 delay 当 1ms（隔离复现 1 秒 915 次；
+    //     宿主内未观测到该警告，故不断言其发生，也不据此归因 CPU）；
+    //   include_user_messages=false → 对象恒 truthy → 关掉的追踪照发；
+    //   project_name / language → 非字符串 → 两个字段整个不发；
+    //   cache_limit → `n > 对象` 恒 false → 缓存永不裁剪。
+    // 这一条用例把「每个字段都是 ref」钉成回归门槛：任何一个字段漏了规范化就会红。
+    const ref = (value: unknown) => {
+      const write = Symbol('write');
+      return Object.freeze({ get: () => value, [write]: () => {} });
+    };
+    const probe = observeIntervals();
+    try {
+      const { ctx, emit } = makeFakeCtx();
+      const session = { id: 'wiring-refs', header: { cwd: process.cwd() } };
+
+      apply(ctx as Context, {
+        api_key: ref('waka_ref_key_777'),
+        api_url: ref(server.getBaseUrl()),
+        heartbeat_interval_ms: ref(60000),
+        project_name: ref('refs-test'),
+        language: ref(''),
+        app_entity: ref('DSH-Ref'),
+        include_tool_calls: ref(true),
+        include_user_messages: ref(false),
+        include_assistant_messages: ref(false),
+        cache_heartbeats: ref(true),
+        cache_limit: ref(100),
+        debug: ref(false),
+      } as any);
+
+      emit('agent/status', { agent: { session }, status: 'running' });
+      // 定时器 delay 必须是数字：非数字会被 Node 归一成 1ms 形成冲刷风暴，
+      // 而 observeIntervals 只登记数字 delay —— 漏了规范化时这里就是 0。
+      expect(probe.created(60000)).toBe(1);
+
+      emit('session/event', session, {
+        type: 'tool/call',
+        data: { turn: 1, step: 1, callId: 'c-1', name: 'bash', arguments: JSON.stringify({ command: 'ls -la' }) },
+      });
+      emit('session/event', session, {
+        type: 'user/message',
+        data: { content: '这条不该被上报' },
+      });
+      emit('agent/status', { agent: { session }, status: 'idle' });
+
+      for (let t = 0; t < 200 && server.getReceivedHeartbeats().length === 0; t++) {
+        await new Promise(r => setTimeout(r, 25));
+      }
+      const landed = server.getReceivedHeartbeats();
+      // key 与 api_url 都取自解包后的值：能发出去，且凭据是那个字符串
+      expect(server.lastHeartbeatAuth).toBe(`Basic ${btoa('waka_ref_key_777:')}`);
+      // project / app_entity 不再消失
+      expect(landed.every((h: any) => h.project === 'refs-test')).toBe(true);
+      expect(landed.some((h: any) => h.entity === 'DSH-Ref')).toBe(true);
+      // include_user_messages=false 真的被当成 false
+      expect(landed.some((h: any) => h.category === 'communicating')).toBe(false);
+    } finally {
+      probe.restore();
     }
   });
 

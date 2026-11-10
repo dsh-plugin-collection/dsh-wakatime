@@ -225,19 +225,21 @@ src/
 
 ## 开发与打包
 
-### 三个版本敏感的接线点（0.2.1 仍成立）
+### 四个版本敏感的接线点（0.2.2 仍成立）
 
 | 接线点 | 规则 | 依据 |
 |---|---|---|
 | WebUI 槽位 `plugins.bundle.config` 的 key | 是**插件包名**（`package.json` 的 `name`），不是 settings 命名空间，也不是 profile 条目 id；key 不匹配则该 bundle 页面没有配置卡片 | 宿主 `dsh-client-ui-plugin-manager/lib/types/client/slot-contract.d.ts:149`（"keyed by the bundle's package name"），渲染处 `lib/client.js:2964` 传 `{ entryKey: pkg.name }` |
 | `@deepseek-ai/dsh-client-ui-primitives` 的引用方式 | 必须保持 **external**，不能打进 `lib/client.js`：宿主 web 模块表常驻该 id，官方 client 包同样 `require("@deepseek-ai/dsh-client-ui-primitives")`；打进包会把整套图标复制一份 | 宿主 `dsh-web-frontend/dist/assets/index-*.js` 模块表含该 id；`dsh-client-ui-plugin-manager/lib/client.js:10`；本仓库 `build.mjs:28` |
-| 设置页自动投影 | 依赖插件 Config 上的 `.volatile()`；0.2.1 里投影逻辑仍在宿主 `dsh-app-boot`（把 `volatile` 写进 schema 的 `x-cordis`） | 本仓库 `src/index.ts:37-47`；宿主 `dsh-app-boot/lib/index.js:2606`（`validateVolatilePlacement`）与 `:2735` 起的投影分支 |
+| 设置页自动投影 | 依赖插件 Config 上的 `.volatile()`；投影逻辑在宿主 `dsh-app-boot`（把 `volatile` 写进 schema 的 `x-cordis`） | 本仓库 `src/index.ts`；宿主 `dsh-app-boot/lib/index.js` 的 `validateVolatilePlacement` 与投影分支 |
+| `.volatile()` 字段交到插件手里是 **ref 对象**，不是值 | `apply()` 收到的每个 volatile 字段都是 `Object.freeze({ get: () => value, [write]: … })`；**必须解包后才能用**，`dsh-settings` 自己也是这么做的（`plainConfig`）。直接当值用会以多种方式静默失效：`api_url` 拼出非法 URL、`heartbeat_interval_ms` 被 Node 当 1ms、布尔恒真、字符串字段整个不发、`cache_limit` 比较恒 false。本插件统一在 `src/config-value.ts` 规范化，入口与文档层都过一遍 | 宿主 `cosmokit/lib/index.js` 的 `createVolatile` / `isVolatile`；`dsh-settings/lib/index.js` 的 `plainConfig`（`if (isVolatile(value)) return plainConfig(value.get())`）；0.2.1 与 0.2.2 两代实测一致 |
 
 ### 依赖与宿主版本漂移
 
 | 事项 | 说明 |
 |---|---|
 | 包管理器只有 pnpm | 仓库只认 `pnpm-lock.yaml`（配套 `pnpm-workspace.yaml`），没有 `package-lock.json`；安装与锁文件更新一律走 pnpm |
+| `typescript` 必须是显式 devDependency | `scripts.build` / `prepare` / `watch` 都调 `tsc`。11-10 之前它**根本不在 devDependencies 和 lockfile 里**（grep 命中 0），构建能成纯粹因为环境里恰好有个外来 tsc——换机器、干净 clone、或 `pnpm install --frozen-lockfile` 都会直接构建失败（`prepare` 在装依赖时就会炸）。现已声明 `typescript: ^5.9.0`（与同 workspace 的兄弟插件一致），构建脚本改用本地 `./node_modules/.bin/tsc` 而不是 `npx tsc`（`npx` 在缺失时会去装一个同名废弃包 `tsc@2.0.4`，报"这不是你要的 tsc"） |
 | 开发期依赖精确钉版 | devDependencies 把 `@deepseek-ai/dsh-agent` / `@deepseek-ai/dsh-session` / `@deepseek-ai/dsh-settings` / `@deepseek-ai/dsh-client-ui-primitives` 全部钉到 `0.2.1-rc.2`（`@deepseek-ai/cordis` `^4.0.5`、`@deepseek-ai/schemastery` `^3.18.5` 仍为区间）。这只是开发期取值，不构成对外契约：运行时闸门只看 `engines.dsh`，对外区间是上面的 peer 列表。`@deepseek-ai/dsh-client-ui-primitives` 列为显式 devDependency 只为开发期解析，打包时仍必须保持 external（见上表） |
 | 宿主一方包 peers 精确 pin | 0.2.1 起宿主各包对 `@deepseek-ai/dsh-*` 的 peers 全部精确 pin 到同一版本（`@deepseek-ai/cordis` 仍是 `~4.0.5` 区间）。这是宿主 monorepo 内部的做法，插件不要照抄，见上方「peers 要写区间」 |
 | `@deepseek-ai/dsh-invariants` 已停更 | registry 末版为 `0.2.0-rc.2`，0.2.1-rc.2 的宿主包集合里没有这个包；devDependencies 里若残留它，升级后应移除 |
@@ -263,27 +265,50 @@ src/
 按这个顺序查，能在十分钟内定位到原因（本插件曾因此静默断流一整周）：
 
 1. **先看本地缓存，而不是先看日志。** `~/.dsh/wakatime/heartbeat-cache.jsonl`
-   只有在发送失败时才写入，发送成功时会被排空。它**长期顶在 Cache Limit 上限**
-   就说明发送在持续失败；此时越旧的心跳被挤掉得越多，那段活动已经不可恢复。
-2. **读告警，不需要开 debug。** 失败一律无条件 warn 并带原因：
+   只有在发送失败时才写入，发送成功时会被排空。它**持续增长或长期顶在 Cache Limit
+   上限**就说明发送在持续失败；此时越旧的心跳被挤掉得越多，那段活动已经不可恢复。
+   （缓存**远超** Cache Limit 也是一个信号：说明 `cache_limit` 本身没被当成数字
+   用到了——见第 3 步的配置降级。）
+2. **读告警，不需要开 debug。** 失败一律无条件 warn 并带原因，且 **logger + console
+   双写**（本宿主的 `ctx.logger` 不进 stdout/stderr 捕获文件，只走 logger 等于没有
+   日志——这是本插件两次静默断流没人发现的直接原因）：
    `上报失败…`（传输/鉴权/限流）、`N/M 条心跳被 WakaTime 逐条拒绝并已丢弃…`
    （载荷不合法）、`cache flush failed…`（补发也发不出去）。
-   注意部分宿主不把 `ctx.logger` 输出转发到 stdout 捕获文件，日志汇以宿主实现为准。
-3. **确认这把 key 真的可用。** 设置页「项目名称」下拉走的是同一把 key：
+3. **升级宿主后先看有没有「配置字段不是可用值」这条告警。** 标了 `.volatile()` 的
+   字段由 cosmokit 以 `Object.freeze({ get, [write] })` 的 **ref 对象**交给插件，
+   插件侧统一在 `src/config-value.ts` 解包并逐类型校验；一旦某字段解不出可用值，
+   会回退默认值/现值并列出字段名与形状（不含值）。为什么必须有这层：ref 直接当值用
+   时，同一个升级会同时造成 `api_url` → 非法 URL（请求根本没发出）、
+   `heartbeat_interval_ms` → `setInterval(fn, NaN)` 被 Node 当成 1ms（隔离进程里复现过
+   1 秒 915 次；但**宿主日志里从未出现对应警告**，所以这里只断言 Node 的既定行为，
+   不断言它必然在宿主内发生，也不把任何 CPU 数字归因给它——重启并规范化配置之后宿主
+   CPU 仍在 240% 量级，说明瓶颈不在这里）、`include_*=false` → 对象恒 truthy（关掉的追踪照发）、
+   `project_name`/`language` → 两个字段整个不发、`cache_limit` → 缓存永不裁剪。
+4. **确认这把 key 真的可用。** 设置页「项目名称」下拉走的是同一把 key：
    候选为空且带 `error` 就是 key 或连通性问题（`API Key 无效` = 服务端回了 401；
    `未配置 WakaTime API Key` = 三层来源都没有可用值）。
    key 的取值顺序是配置层 → `WAKATIME_API_KEY` → `~/.wakatime.cfg`，
-   三层都只接受**非空字符串**：形状不对（例如 loader 交来的未求值 `!!js` 节点
-   是个对象）会被忽略并继续回退，同时在告警里给出该值的形状摘要。
-4. **检查到 WakaTime 的网络连通性**（插件只读 `HTTPS_PROXY` / `HTTP_PROXY`
-   环境变量，不读 `~/.wakatime.cfg` 里的 `proxy`）。
-5. **怀疑「跑的不是你改的代码」时先确认构建指纹。** 日志里
+   三层都只接受**非空字符串**，形状不对会被忽略并继续回退，同时在告警里给出形状摘要。
+5. **检查到 WakaTime 的网络连通性，并注意代理口径。** 出口代理的优先级是
+   `HTTPS_PROXY` / `HTTP_PROXY` 环境变量 → `~/.wakatime.cfg` 的 `[settings] proxy`
+   （与 wakatime-cli 同一个来源），`NO_PROXY` 支持 `*`、精确主机与 `.suffix` 写法。
+   为什么插件要读 cfg：实测同一台机器上 curl 直连、curl 经代理、node 直连都 20/20 通，
+   唯独插件间歇 `fetch failed（cause: ETIMEDOUT）`——因为它是同机上唯一不走代理的那条
+   链路，而用户的代理本来就配在 cfg 里。诊断信息现在会带 `cause`（ECONNRESET /
+   ETIMEDOUT / ENOTFOUND…），不再只有一句 `fetch failed`。
+6. **怀疑「跑的不是你改的代码」时先确认构建指纹。** 日志里
    `apply called; artifact mtime=… pid=…` 直接回答这个进程载入了哪一次构建。
    热重载可能留下旧 fiber 继续以旧代码发送——行为与代码不一致时先完全重启 DSH。
-6. **载荷长度是硬校验。** `entity` ≤ 2083、`project` / `branch` ≤ 1024，
+7. **载荷长度是硬校验。** `entity` ≤ 2083、`project` / `branch` ≤ 1024，
    空串同样被拒。插件会先裁剪再发，被裁剪过的 `entity` 以 `...` 结尾；
    仍然出现「逐条拒绝」告警时，说明有字段不在裁剪覆盖范围内，请把告警里的
    服务端原因贴到 issue 上。
+8. **想直接用 API 回读自己的数据时，插件 key 已经不够了。** WakaTime 自 2026-10 起
+   对读端点（`/users/current`、`/users/current/projects`、`/users/current/heartbeats`）
+   使用插件 key 返回 `403 API Keys are only for plugins, use your personal oauth token`，
+   而**写端点 `heartbeats.bulk` 仍接受插件 key**。两个后果：设置页「项目名称」下拉会
+   一直是空的（上游策略变化，不是本插件的鉴权 bug）；排查时也别把这次 403 误读成
+   key 失效——判断 key 是否可用，请用写端点或本插件的失败告警。
 
 ### shell 类别判定
 

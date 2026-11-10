@@ -251,10 +251,14 @@ export function resolveDependencies(cwd: string): Promise<string[]> {
 }
 
 /**
- * Read API key from ~/.wakatime.cfg
- * Returns empty string if file doesn't exist or key not found
+ * 从 ~/.wakatime.cfg 的 [settings] 段读取一个键。
+ *
+ * 这是 WakaTime 生态的标准配置文件，wakatime-cli 自己就读它——插件要行为一致，
+ * 就不能只看环境变量。返回空串表示「没有这一项」。
+ *
+ * @param key - 小节内的键名（如 `api_key` / `proxy`）。
  */
-export function readWakatimeCfgApiKey(): string {
+export function readWakatimeCfgValue(key: string): string {
   // os.homedir() 在 POSIX 下优先取 $HOME（测试可通过覆盖 HOME 重定向），
   // Windows 下取 USERPROFILE，替代旧的手工 env 拼接与不可展开的 '~'
   const cfgPath = join(homedir(), '.wakatime.cfg');
@@ -262,15 +266,38 @@ export function readWakatimeCfgApiKey(): string {
 
   try {
     const content = readFileSync(cfgPath, 'utf-8');
-    for (const line of content.split('\n').filter(Boolean)) {
-      const match = line.match(/api_key\s*=\s*(.+)/);
-      if (match) return match[1].trim();
+    const pattern = new RegExp(`^\\s*${key}\\s*=\\s*(.+)$`, 'i');
+    for (const line of content.split('\n')) {
+      const match = line.match(pattern);
+      if (match) return match[1]!.trim();
     }
   } catch {
     // Invalid config file
   }
 
   return '';
+}
+
+/**
+ * Read API key from ~/.wakatime.cfg
+ * Returns empty string if file doesn't exist or key not found
+ */
+export function readWakatimeCfgApiKey(): string {
+  return readWakatimeCfgValue('api_key');
+}
+
+/**
+ * 读取 ~/.wakatime.cfg 里配置的出口代理（`proxy = http://host:port`）。
+ *
+ * 为什么需要：插件此前只认 `HTTPS_PROXY` / `HTTP_PROXY` 环境变量，而用户为
+ * wakatime-cli 配的代理写在 cfg 里。两边行为不一致的后果是实测到的：
+ * 同一台机器上 curl / node 直连与经代理都 20/20 通、wakatime-cli 稳定上报，
+ * 插件却间歇 `fetch failed（cause: ETIMEDOUT）`——因为它是唯一没走代理的那一个。
+ *
+ * @returns 代理地址，未配置时为空串。
+ */
+export function readWakatimeCfgProxy(): string {
+  return readWakatimeCfgValue('proxy');
 }
 
 /**
