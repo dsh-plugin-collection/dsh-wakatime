@@ -22,6 +22,28 @@ export interface RejectedHeartbeat {
   permanent: boolean;
 }
 
+/**
+ * 把 fetch 抛出的错误展开成一行可诊断的文本。
+ *
+ * `TypeError: fetch failed` 本身信息量为零：undici 把真正的原因放在 `error.cause`
+ * 里（ECONNRESET / ENOTFOUND / EAI_AGAIN / SELF_SIGNED_CERT_IN_CHAIN / 具体 syscall）。
+ * 丢掉 cause 就等于把「进程内网络路径坏了」和「服务端有问题」写成同一句话，
+ * 排查只能靠猜——本次间歇断流就是这样卡住十几分钟的。
+ *
+ * @param error - fetch / 隧道抛出的原始错误。
+ * @returns 形如 `TypeError: fetch failed（cause: ECONNRESET / read / syscall=read）`。
+ */
+export function describeNetworkError(error: unknown): string {
+  const e = error as (Error & { cause?: unknown }) | undefined;
+  const name = e?.name ?? 'Error';
+  const base = e?.message ?? String(error);
+  const cause = e?.cause as (Error & { code?: string; syscall?: string; errno?: number } | undefined) | undefined;
+  if (!cause || typeof cause !== 'object') return `${name}: ${base}`;
+  const parts = [cause.code, cause.message, cause.syscall ? `syscall=${cause.syscall}` : ''].filter(Boolean);
+  if (parts.length === 0) return `${name}: ${base}`;
+  return `${name}: ${base}（cause: ${parts.join(' / ')}）`;
+}
+
 /** 一次批量上报的结果。 */
 export interface HeartbeatSendResult {
   accepted: number;
@@ -60,6 +82,62 @@ export interface WakaTimeClientConfig {
   api_url: string;
   /** 单次 HTTP 请求超时（毫秒），默认 10000 */
   timeout_ms?: number;
+  /**
+   * ~/.wakatime.cfg 里配置的代理（`proxy = http://host:port`）。
+   * 由调用方注入而不是在这里读文件，客户端因此保持无文件系统依赖、可单测。
+   */
+  cfg_proxy?: string;
+}
+
+/** 环境变量里可能被使用的代理名（小写优先，与 undici 的读取顺序一致）。 */
+const PROXY_ENV_NAMES = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'] as const;
+
+/**
+ * 解析本进程应使用的出口代理。
+ *
+ * 优先级：环境变量 > ~/.wakatime.cfg 的 `proxy`。前者代表"这次启动明确要求的
+ * 网络路径"（也是 DSH 自己所有出网走的口径），后者代表"WakaTime 生态的标准配置"，
+ * wakatime-cli 读的就是它——插件不读就会成为同机上唯一不走代理的那条链路。
+ *
+ * @param env - 进程环境（默认 process.env，便于测试注入）。
+ * @param cfgProxy - ~/.wakatime.cfg 的 proxy 值（可为空串）。
+ * @returns 代理 URL；没有任何可用代理时为 null。
+ */
+export function resolveProxyUrl(
+  env: Record<string, string | undefined> = process.env,
+  cfgProxy = '',
+): string | null {
+  for (const key of PROXY_ENV_NAMES) {
+    const value = env[key];
+    if (typeof value === 'string' && value.trim() !== '') return value.trim();
+  }
+  const fromCfg = cfgProxy.trim();
+  return fromCfg === '' ? null : fromCfg;
+}
+
+/**
+ * 某个目标主机是否应当走这条代理。
+ *
+ * NO_PROXY 的支持范围比"整串相等"宽一点：支持 `*`、前导点/前缀匹配
+ * （`.example.com` 与 `example.com` 都能匹配子域），并忽略空项——
+ * 原实现只做 `includes(host)`，`NO_PROXY=.corp.example` 这类常见写法形同失效。
+ *
+ * @param proxyUrl - 已解析的代理，null 表示不用代理。
+ * @param targetHost - 目标主机名。
+ * @param noProxy - NO_PROXY 原始串。
+ */
+export function shouldUseProxy(proxyUrl: string | null, targetHost: string, noProxy = ''): boolean {
+  if (proxyUrl === null || proxyUrl === '') return false;
+  const host = targetHost.toLowerCase();
+  for (const raw of noProxy.split(',')) {
+    const entry = raw.trim().toLowerCase();
+    if (entry === '') continue;
+    if (entry === '*') return false;
+    if (entry === host) return false;
+    if (entry.startsWith('.') && (host === entry.slice(1) || host.endsWith(entry))) return false;
+    if (!entry.startsWith('.') && host.endsWith(`.${entry}`)) return false;
+  }
+  return true;
 }
 
 export class WakaTimeClient {
@@ -75,17 +153,17 @@ export class WakaTimeClient {
     this.apiKey = config.api_key;
     this.baseUrl = `${config.api_url}/api/v1`;
     this.userAgent = `dsh/1.0.0 dsh-wakatime/1.0.0`;
-    this.proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy || null;
+    this.proxyUrl = resolveProxyUrl(process.env, config.cfg_proxy);
     this.requestTimeoutMs = config.timeout_ms ?? DEFAULT_REQUEST_TIMEOUT_MS;
   }
 
   /**
    * Update client config (called when settings change from WebUI)
    */
-  updateConfig(config: Pick<WakaTimeClientConfig, 'api_key' | 'api_url' | 'timeout_ms'>): void {
+  updateConfig(config: Pick<WakaTimeClientConfig, 'api_key' | 'api_url' | 'timeout_ms' | 'cfg_proxy'>): void {
     this.apiKey = config.api_key;
     this.baseUrl = `${config.api_url}/api/v1`;
-    this.proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy || null;
+    this.proxyUrl = resolveProxyUrl(process.env, config.cfg_proxy);
     if (config.timeout_ms !== undefined) {
       this.requestTimeoutMs = config.timeout_ms;
     }
@@ -122,8 +200,7 @@ export class WakaTimeClient {
 
     let response: Response;
     const targetHost = new URL(url).hostname;
-    const noProxy = (process.env.NO_PROXY || '').split(',').map(h => h.trim());
-    if (this.proxyUrl && !noProxy.includes(targetHost) && !noProxy.includes('*')) {
+    if (shouldUseProxy(this.proxyUrl, targetHost, process.env.NO_PROXY)) {
       response = await this.fetchWithProxy(url, body);
     } else {
       try {
@@ -143,7 +220,10 @@ export class WakaTimeClient {
         if (name === 'TimeoutError' || name === 'AbortError') {
           throw new WakaTimeError(`WakaTime API 请求超时（${this.requestTimeoutMs}ms）`);
         }
-        throw error;
+        // 网络类失败必须带上 cause：`TypeError: fetch failed` 单独出现时，
+        // 「DNS 挂了」「连接被重置」「证书被中间盒换掉」「宿主改了全局 fetch」
+        // 长得一模一样，只能靠 cause 里的 code/syscall 区分。
+        throw new WakaTimeError(`WakaTime API 网络错误: ${describeNetworkError(error)}`, { cause: error });
       }
     }
 
@@ -225,8 +305,7 @@ export class WakaTimeClient {
     const url = `${this.baseUrl}/users/current/projects?limit=${limit}`;
     let response: Response;
     const targetHost = new URL(url).hostname;
-    const noProxy = (process.env.NO_PROXY || '').split(',').map(h => h.trim());
-    if (this.proxyUrl && !noProxy.includes(targetHost) && !noProxy.includes('*')) {
+    if (shouldUseProxy(this.proxyUrl, targetHost, process.env.NO_PROXY)) {
       response = await this.fetchWithProxy(url, null, 'GET');
     } else {
       try {
@@ -243,7 +322,10 @@ export class WakaTimeClient {
         if (name === 'TimeoutError' || name === 'AbortError') {
           throw new WakaTimeError(`WakaTime API 请求超时（${this.requestTimeoutMs}ms）`);
         }
-        throw error;
+        // 网络类失败必须带上 cause：`TypeError: fetch failed` 单独出现时，
+        // 「DNS 挂了」「连接被重置」「证书被中间盒换掉」「宿主改了全局 fetch」
+        // 长得一模一样，只能靠 cause 里的 code/syscall 区分。
+        throw new WakaTimeError(`WakaTime API 网络错误: ${describeNetworkError(error)}`, { cause: error });
       }
     }
     if (response.status === 401) throw new WakaTimeAuthError('WakaTime API Key 无效');

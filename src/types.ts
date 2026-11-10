@@ -38,8 +38,13 @@ export interface DiffResult {
  * WakaTime API error
  */
 export class WakaTimeError extends Error {
-  constructor(message: string) {
-    super(message);
+  /**
+   * @param message - 面向日志的错误描述。
+   * @param options - 透传给 Error 的选项；`{ cause }` 用于保留底层网络错误的原始
+   *   对象，别让「展开成文本」变成「丢弃现场」。
+   */
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'WakaTimeError';
   }
 }
