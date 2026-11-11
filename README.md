@@ -267,12 +267,15 @@ src/
    growing or sits pinned at the Cache Limit, sending is failing continuously — and the
    oldest heartbeats are being trimmed away, so that activity is already unrecoverable.
    A cache **far above** the Cache Limit is its own signal: `cache_limit` is not reaching
-   the code as a number (see step 3).
+   the code as a number (see step 3). On overflow the plugin now trims by **time** (oldest
+   first) and warns; it no longer drops entries silently — what it trims is really gone.
 2. **Read the warnings; debug is not required.** Failures are always warned with a reason,
    written to **both** the host logger and the console (this host does not forward
    `ctx.logger` to the captured stdout, so logger-only warnings are effectively no logs —
    that is exactly why two separate silent outages went unnoticed):
-   `上报失败…` (transport / auth / rate limit), `N/M 条心跳被 WakaTime 逐条拒绝并已丢弃…`
+   `上报失败…` (transport / auth / rate limit), **`缓存超过上限（N 条），最旧的 M 条心跳已被丢弃（from → to）`**
+   (data loss has actually begun, and that window cannot be recovered),
+   `N/M 条心跳被 WakaTime 逐条拒绝并已丢弃…`
    (invalid payload), `cache flush failed…` (the backfill cannot send either).
 3. **After a host upgrade, look first for "配置字段不是可用值" warnings.** Fields marked
    `.volatile()` reach the plugin as cosmokit refs — `Object.freeze({ get, [write] })`,
