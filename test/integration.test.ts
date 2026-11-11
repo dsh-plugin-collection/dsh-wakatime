@@ -1451,6 +1451,68 @@ describe('Plugin wiring (apply)', () => {
     }
   });
 
+  it('keeps the console quiet on routine successes while still surfacing failures', async () => {
+    // 日志分流是有意设计，不是随手加的判断：
+    //   一次性节点（启动/配置/退出）→ debugLog（debug 时 logger + console）
+    //   每轮都会发生的常态信息（本轮冲刷成功）→ routineLog（只走 logger）
+    //   任何异常（失败/逐条拒绝/缓存丢弃）→ warnOut（无条件双写）
+    // 反过来做的后果实际发生过：`flushed N/N` 每 2 分钟一行打进 console，
+    // 把真正的告警淹没，用户直接反馈"日志噪音太烦"。
+    const consoleLines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      consoleLines.push(args.map((a) => String(a)).join(' '));
+    });
+    const warnLines: string[] = [];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnLines.push(args.map((a) => String(a)).join(' '));
+    });
+    try {
+      const { ctx, emit } = makeFakeCtx();
+      const session = { id: 'noise-check', header: { cwd: process.cwd() } };
+      apply(ctx as Context, {
+        api_key: 'test_key_12345',
+        api_url: server.getBaseUrl(),
+        heartbeat_interval_ms: 60000,
+        project_name: 'noise-test', language: '',
+        include_tool_calls: true, include_user_messages: false, include_assistant_messages: false,
+        cache_heartbeats: true, cache_limit: 100,
+        // debug 打开：一次性节点会出现在 console，用来证明"不是把整个通道关掉了"
+        debug: true,
+      } as any);
+
+      emit('agent/status', { agent: { session }, status: 'running' });
+      emit('session/event', session, {
+        type: 'tool/call',
+        data: { turn: 1, step: 1, callId: 'c-1', name: 'read', arguments: JSON.stringify({ file_path: '/path/noise.ts' }) },
+      });
+      emit('agent/status', { agent: { session }, status: 'idle' });
+      for (let t = 0; t < 200 && server.getReceivedHeartbeats().length === 0; t++) {
+        await new Promise(r => setTimeout(r, 25));
+      }
+      expect(server.getReceivedHeartbeats()).toHaveLength(1);
+
+      // 成功冲刷：console.log 里不许出现
+      expect(consoleLines.some((m) => m.includes('flushed'))).toBe(false);
+      // 启动这类一次性节点：debug 下仍然可见
+      expect(consoleLines.some((m) => m.includes('loaded with API key'))).toBe(true);
+      // 失败必须走高可见通道（这里注入一条必然失败的上传）
+      server.setShouldFail500(true);
+      emit('agent/status', { agent: { session }, status: 'running' });
+      emit('session/event', session, {
+        type: 'tool/call',
+        data: { turn: 1, step: 2, callId: 'c-2', name: 'read', arguments: JSON.stringify({ file_path: '/path/noise2.ts' }) },
+      });
+      emit('agent/status', { agent: { session }, status: 'idle' });
+      for (let t = 0; t < 200 && !warnLines.some((m) => m.includes('上报失败')); t++) {
+        await new Promise(r => setTimeout(r, 25));
+      }
+      expect(warnLines.some((m) => m.includes('上报失败'))).toBe(true);
+    } finally {
+      spy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+
   it('survives a host that hands every volatile field as a ref object', async () => {
     // 事故复盘（Nov 10，宿主 0.2.2-rc.1 + node 24）：标记 `.volatile()` 的字段
     // 由 cosmokit 以 `Object.freeze({ get: () => value, [write]: … })` 交给 apply()。
