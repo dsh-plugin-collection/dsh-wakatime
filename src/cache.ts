@@ -14,6 +14,11 @@ export class HeartbeatCache {
    * 杜绝「并发读同一缓存文件 → 双份上报」的竞态。
    */
   private flushChain: Promise<void> = Promise.resolve();
+  /** 尚未被 takeDropped() 取走的裁剪统计。 */
+  private lastDrop: { count: number; from: number; to: number } | null = null;
+
+  /** 进程生命周期内累计被裁剪的心跳条数（仅用于日志与诊断）。 */
+  private droppedTotal = 0;
 
   constructor(config: { cache_limit: number }) {
     this.config = config;
@@ -137,13 +142,74 @@ export class HeartbeatCache {
     if (failure !== null) throw failure.error;
   }
 
+  /**
+   * 把缓存裁到 cache_limit 以内。
+   *
+   * 原实现是无条件 `lines.slice(-limit)`：缓存涨过上限时，**最旧的心跳被静默删除**
+   * ——用户只会看到「那段时间的数据没了」，而日志里没有任何证据。这里改成：
+   * 1. 先按时间排序再裁剪（不再依赖文件写入顺序，重试回写的条目本来就会乱序）；
+   * 2. 记录累计丢弃条数与最早/最晚被丢弃的时间，供调用方告警。
+   *
+   * 仍然会丢：缓存存在的意义是兜住短暂失败，超过上限说明失败已持续很久，
+   * 若不裁剪就会无限增长、把磁盘和重试时间都拖垮。所以这里的产出不是"不丢"，
+   * 而是"丢得可见"。
+   */
   private async enforceLimit(): Promise<void> {
     if (!existsSync(this.cachePath)) return;
     const content = await readFile(this.cachePath, 'utf-8');
     const lines = content.split('\n').filter(Boolean);
-    if (lines.length > this.config.cache_limit) {
-      const trimmed = lines.slice(-this.config.cache_limit);
-      await writeFile(this.cachePath, trimmed.join('\n') + '\n');
+    const limit = this.config.cache_limit;
+    // limit 不是合法数字（配置层可能仍给来非数字）时不裁剪，宁可不裁也不要
+    // 因为 `n > undefined` 恒 false 而误判"无需裁剪"——那种情况下缓存会无界增长。
+    if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) return;
+    if (lines.length <= limit) return;
+
+    const parsed: Array<{ line: string; time: number }> = [];
+    for (const line of lines) {
+      try {
+        const hb = JSON.parse(line) as WakaTimeHeartbeat;
+        parsed.push({ line, time: typeof hb.time === 'number' ? hb.time : 0 });
+      } catch {
+        // 损坏行没有时间可依，排在最前，优先被裁掉
+        parsed.push({ line, time: 0 });
+      }
     }
+    parsed.sort((a, b) => a.time - b.time);
+    const dropped = parsed.slice(0, parsed.length - limit);
+    const kept = parsed.slice(parsed.length - limit);
+
+    try {
+      await writeFile(this.cachePath, kept.map((entry) => entry.line + '\n').join(''));
+    } catch {
+      return;
+    }
+
+    const droppedCount = dropped.length;
+    const first = dropped[0]?.time ?? 0;
+    const last = dropped[dropped.length - 1]?.time ?? 0;
+    this.droppedTotal += droppedCount;
+    // 累加而不是覆盖：一次 appendBatch 会让缓存短暂超限好几次，每次只裁掉一两条；
+    // 若每次覆盖，告警里就只剩最后一两条，"总共丢了多久"这个信息会消失。
+    const previous = this.lastDrop;
+    this.lastDrop = {
+      count: (previous?.count ?? 0) + droppedCount,
+      from: previous !== null && previous.from > 0 && (first === 0 || previous.from < first) ? previous.from : first,
+      to: Math.max(previous?.to ?? 0, last),
+    };
   }
+
+  /**
+   * 取走「自上次调用以来被裁剪掉的心跳」统计。
+   *
+   * 调用方据此告警：数据被裁掉是必须被看见的事件，但重复告警会刷屏，
+   * 因此读取即清零。
+   *
+   * @returns 累计丢弃条数与时间跨度；没有发生裁剪时为 null。
+   */
+  takeDropped(): { count: number; from: number; to: number } | null {
+    const drop = this.lastDrop;
+    this.lastDrop = null;
+    return drop;
+  }
+
 }

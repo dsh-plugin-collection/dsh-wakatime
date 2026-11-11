@@ -624,6 +624,39 @@ describe('Integration Tests', () => {
         .toEqual(['/path/cache-429.ts', '/path/cache-ok.ts']);
     });
 
+    it('drops the OLDEST heartbeats on overflow and reports how many', async () => {
+      // 原实现是无条件 slice(-limit)：**按写入顺序**保留最后 N 行。而重试回写会
+      // 打断时间顺序，于是"旧心跳被挤掉"这件事可能反过来。更要命的是它删得
+      // 无声无息——用户只看到那段时间数据没了。这里两条都钉住：按时间裁，
+      // 且必须能被报出来。
+      const limited = new HeartbeatCache({ cache_limit: 3 });
+      const base = 1_700_000_000;
+      // 故意乱序写入：时间的先后与写入顺序不一致
+      for (const offset of [2, 0, 4, 1, 3]) {
+        await limited.appendBatch([{ entity: `/path/t${offset}.ts`, type: 'file', time: base + offset }]);
+      }
+
+      const kept = (await limited.readAll()).map((h) => h.entity).sort();
+      expect(kept).toEqual(['/path/t2.ts', '/path/t3.ts', '/path/t4.ts']);
+      // 被裁掉的正是时间最早的两条，而不是先写进来的两条
+      const dropped = limited.takeDropped();
+      expect(dropped).toMatchObject({ count: 2, from: base, to: base + 1 });
+      // 读取即清零：不会重复告警
+      expect(limited.takeDropped()).toBeNull();
+    });
+
+    it('never trims when cache_limit is not a usable number', async () => {
+      // 非数字上限时 `lines.length > undefined` 恒 false，旧实现会误判"无需裁剪"，
+      // 缓存无界增长。现在的处置是同样不裁，但理由要明确（由 config 层保证
+      // 上限是数字；这里守住"不因坏值而静默改变行为"）。
+      const broken = new HeartbeatCache({ cache_limit: undefined as unknown as number });
+      for (let i = 0; i < 5; i++) {
+        await broken.appendBatch([{ entity: `/path/b${i}.ts`, type: 'file', time: 1_700_000_000 + i }]);
+      }
+      expect(await broken.count()).toBe(5);
+      expect(broken.takeDropped()).toBeNull();
+    });
+
     it('should skip corrupt lines instead of failing the whole flush', async () => {
       mkdirSync(join(testCacheDir, '.dsh', 'wakatime'), { recursive: true });
       appendFileSync(

@@ -384,16 +384,36 @@ export function apply(ctx: Context, config: Config): void {
   // exit(1)，见 dsh-app-boot installFailLoud）。因此所有后台冲刷必须自行兜底，
   // 绝不让 rejection 冒泡成进程级未处理拒绝。失败时心跳仍留在磁盘缓存，
   // 由下次冲刷自动重试。
+  /**
+   * 报告「缓存超限被裁剪」这件事。
+   *
+   * 缓存涨过 cache_limit 意味着失败已经持续到把兜底缓冲撑满了，此时最旧的心跳
+   * 会被删掉——旧实现删得无声无息，用户只看到「那段时间数据没了」。这里把每次
+   * 裁剪的条数与时间跨度打出来；`POST` 侧同一批回写会连续触发多次 enforceLimit，
+   * 因此按"上一次报告之后累计"统计，而不是每裁一条报一次。
+   */
+  const reportCacheDrops = (): void => {
+    const dropped = cache.takeDropped();
+    if (dropped === null || dropped.count === 0) return;
+    const from = new Date(dropped.from * 1000).toLocaleString('zh-CN', { hour12: false });
+    const to = new Date(dropped.to * 1000).toLocaleString('zh-CN', { hour12: false });
+    warnOut(
+      ctx,
+      `dsh-wakatime: 缓存超过上限（${runtime.cache_limit} 条），最旧的 ${dropped.count} 条心跳已被丢弃（${from} → ${to}）。` +
+        '这说明上报已持续失败很久，请检查网络/代理；被丢弃的这段时间无法补回。',
+    );
+  };
+
   const flushCacheSafely = (): void => {
     cache.flush(client).catch((error) => {
       warnOut(ctx, `dsh-wakatime: cache flush failed, heartbeats kept for retry: ${String(error)}`);
-    });
+    }).finally(reportCacheDrops);
   };
 
   const flushPendingSafely = (session: Session): void => {
     flushPending(session).catch((error) => {
       warnOut(ctx, `dsh-wakatime: pending flush failed: ${String(error)}`);
-    });
+    }).finally(reportCacheDrops);
   };
 
   const getOrCreateState = (session: Session): SessionState => {
