@@ -5,8 +5,15 @@
  * 产物：lib/index.js（host）+ lib/client.js（浏览器端）
  */
 import { execSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { build } from 'esbuild';
+
+// 0. 清空产物目录
+// tsc 只会覆盖同名输出，不会删除已消失的源文件对应的旧文件。不先清空的话，
+// 删掉一个模块后 lib/ 里仍留着它的 .js/.d.ts——它们还能被 require，热重载也
+// 可能把它当成模块换进来，于是"代码已删除、行为还在"。实测踩过：移除
+// projects-route.ts 后 lib/projects-route.js 仍在。
+rmSync('lib', { recursive: true, force: true });
 
 // 1. host 端：tsc
 // 用本地二进制而不是 `npx tsc`：npx 在依赖缺失时不会报错，而是去 registry
