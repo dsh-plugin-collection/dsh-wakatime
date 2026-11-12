@@ -292,61 +292,13 @@ export class WakaTimeClient {
   }
 
   /**
-   * 拉取当前用户的 WakaTime 项目名列表（GET /users/current/projects）。
-   *
-   * 只服务于设置页「项目名称」的下拉候选：只读、由用户点开下拉触发、
-   * 调用方（路由）自带缓存，故不共用 sendHeartbeats 的限流/退避窗口——
-   * 401/429 直接抛出，由调用方降级为空候选，绝不影响心跳上报路径。
-   * WakaTime 按 last_heartbeat 倒序返回，这里保序去重、剔除无名条目。
-   * @param limit - 最多取多少个近期项目（WakaTime 上限 100）。
-   * @returns 项目名列表（上游顺序）。
-   */
-  async fetchProjects(limit = 100): Promise<string[]> {
-    const url = `${this.baseUrl}/users/current/projects?limit=${limit}`;
-    let response: Response;
-    const targetHost = new URL(url).hostname;
-    if (shouldUseProxy(this.proxyUrl, targetHost, process.env.NO_PROXY)) {
-      response = await this.fetchWithProxy(url, null, 'GET');
-    } else {
-      try {
-        response = await fetch(url, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Basic ${btoa(this.apiKey + ':')}`,
-            'User-Agent': this.userAgent,
-          },
-          signal: AbortSignal.timeout(this.requestTimeoutMs),
-        });
-      } catch (error) {
-        const name = (error as Error | undefined)?.name;
-        if (name === 'TimeoutError' || name === 'AbortError') {
-          throw new WakaTimeError(`WakaTime API 请求超时（${this.requestTimeoutMs}ms）`);
-        }
-        // 网络类失败必须带上 cause：`TypeError: fetch failed` 单独出现时，
-        // 「DNS 挂了」「连接被重置」「证书被中间盒换掉」「宿主改了全局 fetch」
-        // 长得一模一样，只能靠 cause 里的 code/syscall 区分。
-        throw new WakaTimeError(`WakaTime API 网络错误: ${describeNetworkError(error)}`, { cause: error });
-      }
-    }
-    if (response.status === 401) throw new WakaTimeAuthError('WakaTime API Key 无效');
-    if (response.status === 429) throw new WakaTimeRateLimitError('WakaTime API 限流，稍后重试');
-    if (!response.ok) throw new WakaTimeError(`WakaTime API 错误: ${response.status}`);
-    const payload = (await response.json()) as { data?: Array<{ name?: unknown }> };
-    const names = (payload.data ?? [])
-      .map(item => (typeof item.name === 'string' ? item.name : ''))
-      .filter(name => name !== '');
-    return [...new Set(names)];
-  }
-
-  /**
    * Fetch via HTTP(S) proxy using CONNECT tunnel.
    * 整个隧道（CONNECT + 实际请求）共享同一个超时：到时销毁 socket 并拒绝，
    * 避免挂起的代理让 flush 永不返回。
    * @param url - 目标绝对地址。
-   * @param body - 请求体；GET 等无体请求传 null（不发 Content-Length、不 write）。
-   * @param method - HTTP 方法（默认 POST，心跳批量上报的路径不变）。
+   * @param body - 请求体（心跳批量上报的 JSON）。
    */
-  private async fetchWithProxy(url: string, body: string | null, method = 'POST'): Promise<Response> {
+  private async fetchWithProxy(url: string, body: string): Promise<Response> {
     const parsed = new URL(url);
     const proxyParsed = new URL(this.proxyUrl!);
 
@@ -402,10 +354,11 @@ export class WakaTimeClient {
           hostname: parsed.hostname,
           port: 443,
           path: parsed.pathname + parsed.search,
-          method,
+          method: 'POST',
           headers: {
             'Authorization': `Basic ${btoa(this.apiKey + ':')}`,
-            ...(body === null ? {} : { 'Content-Type': 'application/json', 'Content-Length': String(Buffer.byteLength(body)) }),
+            'Content-Type': 'application/json',
+            'Content-Length': String(Buffer.byteLength(body)),
             'User-Agent': this.userAgent,
             'Host': parsed.host,
           },
@@ -435,7 +388,7 @@ export class WakaTimeClient {
           settle(new Error(`Request failed: ${err.message}`));
         });
 
-        if (body !== null) req.write(body);
+        req.write(body);
         req.end();
       });
 

@@ -472,30 +472,6 @@ describe('Integration Tests', () => {
     });
   });
 
-  describe('fetchProjects', () => {
-    it('should return ordered, deduped, string-only project names with Basic auth', async () => {
-      const names = await client.fetchProjects();
-      // 上游顺序保留；重复名去重；非字符串 name 条目剔除
-      expect(names).toEqual(['dsh-plugins', 'apbot_server']);
-      // 鉴权与心跳路径同一套：Basic base64(key + ':')
-      expect(server.lastProjectAuth).toBe(`Basic ${btoa('test_key_12345:')}`);
-      expect(server.projectRequestCount).toBe(1);
-    });
-
-    it('should throw an auth error on 401 without poisoning heartbeat retry windows', async () => {
-      server.projectsFail401 = true;
-      await expect(client.fetchProjects()).rejects.toThrow(/API Key 无效/);
-      // projects 的 401 不写 authFailRetryAfter —— 心跳路径不受候选拉取失败影响
-      server.projectsFail401 = false;
-      const heartbeat: WakaTimeHeartbeat = {
-        entity: '/path/file.ts',
-        type: 'file',
-        time: Date.now() / 1000,
-      };
-      await expect(client.sendHeartbeat(heartbeat)).resolves.toEqual({ accepted: 1, rejected: [] });
-    });
-  });
-
   /**
    * heartbeats.bulk 的「外层 202 + 逐条状态码」契约。
    *

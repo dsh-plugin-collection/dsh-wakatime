@@ -24,18 +24,8 @@ export class MockWakaTimeServer {
   public rejectEntitySubstrings: string[] = [];
   /** 命中 rejectEntitySubstrings 时返回的逐条状态码（默认 400＝校验失败）。 */
   public perItemRejectStatus = 400;
-  /** projects 端点（fetchProjects 测试）：请求计数、最后一次 Authorization 头、可编排数据。 */
-  public projectRequestCount = 0;
-  public lastProjectAuth: string | null = null;
   /** 心跳端点最后一次 Authorization 头：用于断言「实际用哪个 key 发了请求」。 */
   public lastHeartbeatAuth: string | null = null;
-  public projectsFail401 = false;
-  public projectsData: Array<{ id?: string; name?: unknown }> = [
-    { id: 'p1', name: 'dsh-plugins' },
-    { id: 'p2', name: 'apbot_server' },
-    { id: 'p3', name: 'dsh-plugins' },
-    { id: 'p4', name: 12345 },
-  ];
   private port: number | null = null;
 
   constructor() {
@@ -48,25 +38,6 @@ export class MockWakaTimeServer {
     // Parse URL
     const url = new URL(req.url || '/', `http://localhost`);
     
-    // Projects endpoint（fetchProjects）：GET /users/current/projects
-    if (url.pathname.includes('users/current/projects')) {
-      this.projectRequestCount++;
-      this.lastProjectAuth = (req.headers['authorization'] as string | undefined) ?? null;
-      if (req.method !== 'GET') {
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed' }));
-        return;
-      }
-      if (this.projectsFail401) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Unauthorized' }));
-        return;
-      }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ data: this.projectsData }));
-      return;
-    }
-
     // Only handle heartbeats endpoint
     if (!url.pathname.includes('heartbeats')) {
       res.writeHead(404, { 'Content-Type': 'application/json' });

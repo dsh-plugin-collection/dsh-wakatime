@@ -287,12 +287,14 @@ src/
    `include_*=false` → truthy object (tracking you disabled keeps reporting),
    `project_name` / `language` → both fields silently dropped from payloads,
    `cache_limit` → the cache is never trimmed.
-4. **Confirm this key actually works.** The "Project name" dropdown in the settings page
-   uses the same key: empty candidates plus an `error` means a key or connectivity problem
-   (`API Key 无效` = the server returned 401; `未配置 WakaTime API Key` = none of the three
-   sources has a usable value). Resolution order is config layer → `WAKATIME_API_KEY` →
-   `~/.wakatime.cfg`, and all three only accept a **non-empty string**: a wrong shape is
-   ignored, falls through, and is warned with a shape summary.
+4. **Confirm this key actually works.** The warnings say it: `未配置 WakaTime API Key` =
+   none of the three sources has a usable value; `WakaTime API Key 无效` = the server
+   returned 401; `上报失败…（cause: …）` = a transport problem. Resolution order is config
+   layer → `WAKATIME_API_KEY` → `~/.wakatime.cfg`, and all three only accept a **non-empty
+   string**: a wrong shape is ignored, falls through, and is warned with a shape summary.
+   (The settings page used to offer a "Project name" dropdown backed by
+   `/users/current/projects`; that read endpoint now answers 403 for plugin keys, so the
+   candidates were removed and the field is free text.)
 5. **Check connectivity to WakaTime, and note the proxy precedence.** Outbound proxy is
    resolved as `HTTPS_PROXY` / `HTTP_PROXY` env vars → `proxy` under `[settings]` in
    `~/.wakatime.cfg` (the same source wakatime-cli uses); `NO_PROXY` accepts `*`, exact
@@ -311,10 +313,11 @@ src/
 8. **A plugin key no longer reads your own data back.** Since 2026-10 WakaTime answers
    `/users/current`, `/users/current/projects` and `/users/current/heartbeats` with
    `403 API Keys are only for plugins, use your personal oauth token` while
-   **`heartbeats.bulk` still accepts the plugin key**. Two consequences: the "Project name"
-   dropdown stays empty (an upstream policy change, not an auth bug in this plugin), and a
-   403 on a read endpoint must not be mistaken for a dead key — judge the key by the write
-   endpoint or by this plugin's failure warnings.
+   **`heartbeats.bulk` still accepts the plugin key**. This is an upstream policy change,
+   not an auth bug in this plugin. Consequence: the "Project name" candidate dropdown that
+   depended on the read endpoint has been removed (see step 4). And a 403 on a read endpoint
+   must not be mistaken for a dead key — judge the key by the write endpoint or by this
+   plugin's failure warnings.
 
 ### Shell category mapping
 
