@@ -195,11 +195,13 @@ export function apply(ctx: Context, config: Config): void {
   const runtime: Config = { ...resolved, api_key: apiKey };
 
   /**
-   * debug 模式的输出出口。
+   * 一次性事件（启动、配置变更、退出）的调试输出。
    *
    * 设置项写着「输出详细日志到 DSH 控制台」，而本宿主的 `ctx.logger` 不进
-   * stdout/stderr 捕获文件——只调 logger 等于这个开关根本没用，所以 debug
-   * 下的诊断同时走 console。
+   * stdout/stderr 捕获文件——只调 logger 等于这个开关根本没用，所以这类
+   * **每次节点只发生一次**的诊断同时走 console。
+   *
+   * 每轮都发生的常态信息（例如「本轮冲刷成功 N 条」）不要用它，见 {@link routineLog}。
    *
    * @param message - 已带 `dsh-wakatime:` 前缀的正文。
    */
@@ -207,6 +209,23 @@ export function apply(ctx: Context, config: Config): void {
     if (!runtime.debug) return;
     ctx.logger.info(message);
     console.log(`[${name}] ${message}`);
+  };
+
+  /**
+   * 高频常态事件的输出口径：**只进宿主 logger，不进 console**。
+   *
+   * 心跳每 120 秒冲刷一次、一次会话可能跑几个小时，这类「成功且无异常」的行
+   * 一旦打到 console 就是纯噪音——它会把真正的告警淹没掉，而告警可见性正是
+   * 这个插件前两次事故后费力建立起来的东西。所以分流规则是：
+   * - 一次性的节点（启动/配置/退出）→ debugLog（debug 时双写）
+   * - 每轮都会发生的常态信息 → routineLog（只走 logger，console 保持安静）
+   * - 任何异常（失败、逐条拒绝、缓存丢弃）→ warnOut（无条件双写）
+   *
+   * @param message - 已带 `dsh-wakatime:` 前缀的正文。
+   */
+  const routineLog = (message: string): void => {
+    if (!runtime.debug) return;
+    ctx.logger.info(message);
   };
 
   debugLog(`dsh-wakatime: loaded with API key ${maskApiKey(apiKey)}`);
@@ -515,7 +534,8 @@ export function apply(ctx: Context, config: Config): void {
         `dsh-wakatime: ${retryable.length}/${heartbeats.length} 条心跳被逐条限流或服务端错误退回，已转入缓存重试`,
       );
     } else if (runtime.debug) {
-      debugLog(`dsh-wakatime: flushed ${accepted}/${heartbeats.length} heartbeats`);
+      // 每轮冲刷都会走到这里：用 routineLog，console 保持安静。
+      routineLog(`dsh-wakatime: flushed ${accepted}/${heartbeats.length} heartbeats`);
     }
   };
 
