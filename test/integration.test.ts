@@ -357,6 +357,47 @@ describe('Integration Tests', () => {
       expect(tracker.getPending().find((hb) => hb.entity === '/repo/a.ts')?.category).toBe('browsing');
     });
 
+    it('reports cached input tokens separately instead of folding them into input', async () => {
+      // 宿主的 TokenUsage 分量互斥：inputTokens 只是「未命中」，缓存命中在
+      // cacheReadTokens / cacheWriteTokens。只报未命中会把长上下文会话低估两个
+      // 数量级（实测某会话 cacheRead 占计费输入的 98%+），WakaTime 的 AI Tokens
+      // 因此与本地 context 面板对不上。
+      const mockSession = { id: 'token-session', header: { cwd: process.cwd() } };
+      const tracker = new FileTracker(mockSession as any, { project_name: 'token-test', language: '' });
+
+      await tracker.trackAssistantMessage({
+        type: 'assistant/message',
+        time: Date.now(),
+        data: {
+          turn: 1, step: 1, message: { content: 'ok' },
+          // 典型长上下文一轮：缓存命中远大于未命中
+          usage: { inputTokens: 1372, outputTokens: 240, cacheReadTokens: 78729, cacheWriteTokens: 512 },
+        },
+      } as any);
+
+      const [heartbeat] = tracker.getPending();
+      expect(heartbeat.ai_input_tokens).toBe(1372);          // 只含未命中，绝不把缓存加进去
+      expect(heartbeat.ai_output_tokens).toBe(240);
+      expect(heartbeat.ai_cached_input_tokens).toBe(78729);  // 缓存命中单独成字段
+      // cacheWrite 没有对应字段，不能被塞进 cached（那是两种量纲）
+      expect(heartbeat.ai_cached_input_tokens).not.toBe(78729 + 512);
+    });
+
+    it('omits the cached field when there is no cache read', async () => {
+      const mockSession = { id: 'token-session-2', header: { cwd: process.cwd() } };
+      const tracker = new FileTracker(mockSession as any, { project_name: 'token-test', language: '' });
+
+      await tracker.trackAssistantMessage({
+        type: 'assistant/message',
+        time: Date.now(),
+        data: { turn: 1, step: 1, message: { content: 'ok' }, usage: { inputTokens: 900, outputTokens: 30 } },
+      } as any);
+
+      const [heartbeat] = tracker.getPending();
+      // 不写 0：官方字段 omitempty，0 与「没有这个量」语义不同
+      expect(heartbeat.ai_cached_input_tokens).toBeUndefined();
+    });
+
     it('stamps the heartbeat with the event time, not the processing time', async () => {
       // 事件从产生到被处理之间隔着队列积压与 project/branch 探测的 await，
       // 用 Date.now() 会把活动记到错误时刻，直接污染 WakaTime 的时长计算。
@@ -469,30 +510,6 @@ describe('Integration Tests', () => {
       };
 
       await expect(fastClient.sendHeartbeat(heartbeat)).rejects.toThrow(/超时/);
-    });
-  });
-
-  describe('fetchProjects', () => {
-    it('should return ordered, deduped, string-only project names with Basic auth', async () => {
-      const names = await client.fetchProjects();
-      // 上游顺序保留；重复名去重；非字符串 name 条目剔除
-      expect(names).toEqual(['dsh-plugins', 'apbot_server']);
-      // 鉴权与心跳路径同一套：Basic base64(key + ':')
-      expect(server.lastProjectAuth).toBe(`Basic ${btoa('test_key_12345:')}`);
-      expect(server.projectRequestCount).toBe(1);
-    });
-
-    it('should throw an auth error on 401 without poisoning heartbeat retry windows', async () => {
-      server.projectsFail401 = true;
-      await expect(client.fetchProjects()).rejects.toThrow(/API Key 无效/);
-      // projects 的 401 不写 authFailRetryAfter —— 心跳路径不受候选拉取失败影响
-      server.projectsFail401 = false;
-      const heartbeat: WakaTimeHeartbeat = {
-        entity: '/path/file.ts',
-        type: 'file',
-        time: Date.now() / 1000,
-      };
-      await expect(client.sendHeartbeat(heartbeat)).resolves.toEqual({ accepted: 1, rejected: [] });
     });
   });
 

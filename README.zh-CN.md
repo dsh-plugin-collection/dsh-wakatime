@@ -19,7 +19,14 @@ DeepSeek Harness（DSH）的 WakaTime 心跳上报插件。
 - **分支追踪** —— 上报当前工作的 git 分支
 - **语言推断** —— 根据文件扩展名识别编程语言
 - **行数统计** —— write/edit 操作上报新增/删除行数
-- **AI token 上报** —— assistant 回复的心跳携带 `ai_input_tokens` / `ai_output_tokens` / `ai_prompt_length` / `ai_session`（WakaTime GenAI 指标）；需开启 **Track AI Messages** 才生效
+- **AI token 上报** —— assistant 回复的心跳携带 `ai_input_tokens` / `ai_cached_input_tokens` / `ai_output_tokens` / `ai_prompt_length` / `ai_session`（WakaTime GenAI 指标）；需开启 **Track AI Messages** 才生效
+
+  口径说明（容易和本地面板对不上，先说清）：宿主的 `TokenUsage` 三个输入分量**互斥**——
+  `inputTokens` 只是未命中部分，缓存命中记在 `cacheReadTokens`，计费输入 = 三者之和。
+  本插件把未命中报进 `ai_input_tokens`、把缓存命中报进 `ai_cached_input_tokens`，
+  **不把两者相加**；`cacheWriteTokens` 在 WakaTime 侧没有对应字段，故不上报。
+  一个实测样本：某会话计费输入 80.1M，其中缓存命中 78.7M（98%+）——只报未命中的实现
+  会让 WakaTime 的 Tokens 比本地 context 面板小两个数量级。
 - **心跳合并** —— 5 秒内对同一文件的连续操作自动合并
 - **批量发送** —— 单次 HTTP 请求最多携带 25 条心跳（WakaTime 上限）
 - **请求超时** —— 所有 HTTP 请求（10 秒）与 git 探测（5 秒）都有硬超时，挂起的端点永远不会阻塞冲刷
@@ -286,11 +293,12 @@ src/
    不断言它必然在宿主内发生，也不把任何 CPU 数字归因给它——重启并规范化配置之后宿主
    CPU 仍在 240% 量级，说明瓶颈不在这里）、`include_*=false` → 对象恒 truthy（关掉的追踪照发）、
    `project_name`/`language` → 两个字段整个不发、`cache_limit` → 缓存永不裁剪。
-4. **确认这把 key 真的可用。** 设置页「项目名称」下拉走的是同一把 key：
-   候选为空且带 `error` 就是 key 或连通性问题（`API Key 无效` = 服务端回了 401；
-   `未配置 WakaTime API Key` = 三层来源都没有可用值）。
-   key 的取值顺序是配置层 → `WAKATIME_API_KEY` → `~/.wakatime.cfg`，
+4. **确认这把 key 真的可用。** 看告警就够了：`未配置 WakaTime API Key` = 三层来源
+   都没有可用值；`WakaTime API Key 无效` = 服务端回了 401；`上报失败…（cause: …）` =
+   传输层问题。key 的取值顺序是配置层 → `WAKATIME_API_KEY` → `~/.wakatime.cfg`，
    三层都只接受**非空字符串**，形状不对会被忽略并继续回退，同时在告警里给出形状摘要。
+   （设置页曾提供「项目名称」候选下拉，靠 `/users/current/projects` 拉取；该读端点
+   现已对插件 key 返回 403，候选功能已移除，项目名称改为自由输入。）
 5. **检查到 WakaTime 的网络连通性，并注意代理口径。** 出口代理的优先级是
    `HTTPS_PROXY` / `HTTP_PROXY` 环境变量 → `~/.wakatime.cfg` 的 `[settings] proxy`
    （与 wakatime-cli 同一个来源），`NO_PROXY` 支持 `*`、精确主机与 `.suffix` 写法。
@@ -308,9 +316,9 @@ src/
 8. **想直接用 API 回读自己的数据时，插件 key 已经不够了。** WakaTime 自 2026-10 起
    对读端点（`/users/current`、`/users/current/projects`、`/users/current/heartbeats`）
    使用插件 key 返回 `403 API Keys are only for plugins, use your personal oauth token`，
-   而**写端点 `heartbeats.bulk` 仍接受插件 key**。两个后果：设置页「项目名称」下拉会
-   一直是空的（上游策略变化，不是本插件的鉴权 bug）；排查时也别把这次 403 误读成
-   key 失效——判断 key 是否可用，请用写端点或本插件的失败告警。
+   而**写端点 `heartbeats.bulk` 仍接受插件 key**。这是上游策略变化，不是本插件的鉴权
+   bug。后果之一：依赖读端点的「项目名称」候选下拉已经移除（见第 4 步）；另一个——
+   排查时别把这次 403 误读成 key 失效，判断 key 是否可用要看写端点或本插件的失败告警。
 
 ### shell 类别判定
 

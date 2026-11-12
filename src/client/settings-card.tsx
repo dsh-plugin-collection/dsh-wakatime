@@ -57,7 +57,7 @@ export const WAKATIME_FIELDS: ReadonlyArray<{
   { key: 'include_tool_calls', kind: 'boolean', section: 'tracking' },
   { key: 'include_user_messages', kind: 'boolean', section: 'tracking' },
   { key: 'include_assistant_messages', kind: 'boolean', section: 'tracking' },
-  { key: 'project_name', kind: 'combo', section: 'tracking' },
+  { key: 'project_name', kind: 'text', section: 'tracking' },
   { key: 'language', kind: 'combo', section: 'tracking' },
   // 应用名是自由文本：候选值无意义（它就是要表达「这是哪个应用」），且留空有
   // 明确的服务端默认（Terminal），不必做成 combobox。
@@ -155,42 +155,6 @@ function ShowInSectionToggle({ t }: { t: WkStrings }): ReactElement {
 }
 
 /**
- * 「项目名称」候选：经 host 代理路由 `/api/dsh-wakatime/projects` 拉取
- * （api_key 在 host 侧、线路对 client 脱敏，client 无法直连 WakaTime）。
- * 首次点开下拉才请求；host 侧另有 60s 缓存，这里只做组件生命周期内的一次
- * 加载与失败态。失败/无 key 时候选为空，字段退化为自由输入。
- */
-type ComboStatus = 'idle' | 'loading' | 'ready' | 'error';
-
-interface ProjectsState {
-  status: ComboStatus;
-  options: readonly string[];
-}
-
-function useProjectOptions(): { state: ProjectsState; load: () => void } {
-  const [state, setState] = useState<ProjectsState>({ status: 'idle', options: [] });
-  const inflight = useRef(false);
-  const load = (): void => {
-    setState((prev) => {
-      if (prev.status === 'ready' || prev.status === 'loading' || inflight.current) return prev;
-      inflight.current = true;
-      void fetch('/api/dsh-wakatime/projects')
-        .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
-        .then((body: { projects?: string[] }) => {
-          inflight.current = false;
-          setState({ status: 'ready', options: body.projects ?? [] });
-        })
-        .catch(() => {
-          inflight.current = false;
-          setState({ status: 'error', options: [] });
-        });
-      return { ...prev, status: 'loading' };
-    });
-  };
-  return { state, load };
-}
-
-/**
  * 常用 WakaTime 语言候选（内置、非穷举——值域保持开放，输入框可填任意值）。
  * 顺序按使用频率排；不在列表里的合法语言仍可手输。
  */
@@ -208,7 +172,7 @@ const LANGUAGE_OPTIONS: readonly string[] = [
  * 面板用官方 `MenuSurface` + `MenuItemButton`（与工作区切换器同一套菜单件），
  * 当前值打勾。自由输入不受候选限制：草稿语义与 text 字段完全相同。
  */
-function ComboboxField({ id, label, hint, state, disabled, t, options, status, onRequest, onEdit, onReset }: {
+function ComboboxField({ id, label, hint, state, disabled, t, options, onEdit, onReset }: {
   id: string;
   label: string;
   hint: string;
@@ -216,8 +180,6 @@ function ComboboxField({ id, label, hint, state, disabled, t, options, status, o
   disabled: boolean;
   t: WkStrings;
   options: readonly string[];
-  status: ComboStatus;
-  onRequest: () => void;
   onEdit: (text: string) => void;
   onReset: () => void;
 }): ReactElement {
@@ -240,10 +202,7 @@ function ComboboxField({ id, label, hint, state, disabled, t, options, status, o
     };
   }, [open]);
   const toggle = (): void => {
-    setOpen((prev) => {
-      if (!prev) onRequest();
-      return !prev;
-    });
+    setOpen((prev) => !prev);
   };
   const needle = state.text.trim().toLowerCase();
   const visible = needle === '' ? options : options.filter((option) => option.toLowerCase().includes(needle));
@@ -275,9 +234,7 @@ function ComboboxField({ id, label, hint, state, disabled, t, options, status, o
         </button>
         {open ? (
           <MenuSurface compact className="wk-combo-list">
-            {status === 'loading' ? (
-              <p className="wk-combo-status">{t.comboLoading}</p>
-            ) : visible.length === 0 ? (
+            {visible.length === 0 ? (
               <p className="wk-combo-status">{needle === '' ? t.comboEmpty : t.comboNoMatch}</p>
             ) : (
               visible.map((option) => (
@@ -304,7 +261,6 @@ export function WakaTimeCard(props: WakaTimeCardProps): ReactElement {
   const projection = props.useWkCard((value) => value);
   const { shell, fields, configured } = projection;
   const disabled = !shell.writable || shell.saving;
-  const projects = useProjectOptions();
 
   const invalidLabelFor = (def: (typeof WAKATIME_FIELDS)[number]): string =>
     format(t.invalidRange, { min: def.min ?? '', max: def.max ?? '' });
@@ -341,9 +297,9 @@ export function WakaTimeCard(props: WakaTimeCardProps): ReactElement {
       );
     }
     if (def.kind === 'combo') {
-      // 两个 combo 只差候选来源：project_name 走 host 代理（点开才拉），
-      // language 用内置常量（恒 ready，onRequest 无事可做）。
-      const isProject = def.key === 'project_name';
+      // 只剩 language 一个 combo：候选是内置常量，恒 ready，无需远程请求。
+      // （project_name 曾经也有候选，但候选来源是 WakaTime 的 projects 读端点，
+      //  该端点自 2026-10 起对插件 key 一律 403，见下方 removed 注释。）
       return (
         <ComboboxField
           key={def.key}
@@ -353,9 +309,7 @@ export function WakaTimeCard(props: WakaTimeCardProps): ReactElement {
           state={state}
           disabled={disabled}
           t={t}
-          options={isProject ? projects.state.options : LANGUAGE_OPTIONS}
-          status={isProject ? projects.state.status : 'ready'}
-          onRequest={isProject ? projects.load : () => undefined}
+          options={LANGUAGE_OPTIONS}
           onEdit={(text) => props.edit(def.key, text)}
           onReset={() => props.resetField(def.key)}
         />

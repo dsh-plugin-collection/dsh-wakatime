@@ -19,6 +19,15 @@ export interface WakaTimeHeartbeat {
   ai_session?: string;
   /** 距上一心跳消耗的输入 token */
   ai_input_tokens?: number;
+  /**
+   * 缓存命中的输入 token（官方字段 `ai_cached_input_tokens`）。
+   *
+   * 为什么要单独上报：宿主的 TokenUsage 是互斥分量，`inputTokens` 只是未命中部分。
+   * 只在 `ai_input_tokens` 里报未命中，长上下文会话会被低估两个数量级
+   * （实测某会话缓存命中占计费输入的 98%+）。上报后 WakaTime 侧的 AI Tokens
+   * 才与本地 context 面板/账单口径可比。
+   */
+  ai_cached_input_tokens?: number;
   /** 距上一心跳消耗的输出 token */
   ai_output_tokens?: number;
   /** 距上一心跳的用户提示字符数 */
