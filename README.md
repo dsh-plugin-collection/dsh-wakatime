@@ -19,7 +19,9 @@ Track your AI-assisted coding activity and sync it to your [WakaTime](https://wa
 - **Branch tracking** — reports which git branch you're working on
 - **Language inference** — detects programming language from file extension
 - **Line statistics** — reports additions/deletions for write/edit operations
-- **AI token reporting** — attaches `ai_input_tokens` / `ai_output_tokens` / `ai_prompt_length` / `ai_session` to assistant heartbeats (WakaTime GenAI metrics); enable **Track AI Messages** to activate
+- **AI token reporting** — attaches `ai_input_tokens` / `ai_cached_input_tokens` / `ai_output_tokens` / `ai_prompt_length` / `ai_session` to assistant heartbeats (WakaTime GenAI metrics); requires **Track AI Messages**
+
+  Semantics (the usual reason numbers disagree with a local dashboard): the host's `TokenUsage` input components are **disjoint** — `inputTokens` is the uncached part only, cache hits are `cacheReadTokens`, and billed input is the sum of the three. This plugin reports the uncached part as `ai_input_tokens` and cache hits as `ai_cached_input_tokens`, and **never adds them together**; `cacheWriteTokens` has no WakaTime counterpart and is not reported. Measured sample: one session billed 80.1M input of which 78.7M (98%+) was cache hits — an implementation that only reports the uncached part makes WakaTime's Tokens two orders of magnitude smaller than a local context panel.
 - **Heartbeat merging** — coalesces rapid operations on the same file within 5 seconds
 - **Batch sending** — sends up to 25 heartbeats per HTTP request (WakaTime limit)
 - **Request timeouts** — every HTTP request (10s) and git probe (5s) has a hard timeout, so a hanging endpoint can never stall flushing

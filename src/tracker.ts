@@ -34,10 +34,19 @@ interface UserMessageEvent {
   };
 }
 
-/** @deepseek-ai/dsh-llm TokenUsage 的结构子集（避免引入未声明依赖） */
+/**
+ * @deepseek-ai/dsh-llm TokenUsage 的结构子集（避免引入未声明依赖）。
+ *
+ * 分量是**互斥**的（见宿主 `dsh-llm/lib/types/types.d.ts` 的 TokenUsage 注释）：
+ * `inputTokens` 只是「未命中的输入」，缓存命中单独记在 `cacheReadTokens` /
+ * `cacheWriteTokens`，计费输入 = 三者之和。只读 `inputTokens` 会系统性低估，
+ * 而长上下文会话里缓存命中占绝大多数（实测某会话 cacheRead 占 98%+）。
+ */
 interface TokenUsageLike {
   inputTokens?: number;
   outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
 }
 
 interface AssistantMessageEvent {
@@ -227,6 +236,12 @@ export class FileTracker {
     }
     if (usage && typeof usage.outputTokens === 'number') {
       heartbeat.ai_output_tokens = usage.outputTokens;
+    }
+    // 缓存命中单独上报：宿主的三个输入分量互斥，只发未命中那一个会把长上下文
+    // 会话的用量低估两个数量级。注意这里只映射 cacheRead：cacheWrite 是「写入缓存」
+    // 的那部分输入，WakaTime 没有对应字段，硬塞进 cached 会让两种量纲混在一起。
+    if (usage && typeof usage.cacheReadTokens === 'number' && usage.cacheReadTokens > 0) {
+      heartbeat.ai_cached_input_tokens = usage.cacheReadTokens;
     }
     if (this.lastPromptLength != null) {
       heartbeat.ai_prompt_length = this.lastPromptLength;
