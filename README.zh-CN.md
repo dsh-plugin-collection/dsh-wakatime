@@ -43,7 +43,7 @@ DeepSeek Harness（DSH）的 WakaTime 心跳上报插件。
 
 | 端 | 兼容性 |
 |---|---|
-| **DSH（DeepSeek Harness）** | 以 DSH 插件形式运行于 web profile；支持区间由 `package.json` 的 `engines.dsh` 决定，写作 `>=0.1.7-rc.2 <0.2.0-0 \|\| >=0.2.0-rc.2 <0.3.0-0`（闸门规则见下）；peer 依赖写区间：`@deepseek-ai/dsh-agent` / `@deepseek-ai/dsh-session` `^0.1.1-rc.2 \|\| ^0.1.2-rc.1 \|\| ^0.1.5-rc.1 \|\| ^0.1.7-rc.2 \|\| ^0.2.0-rc.2 \|\| ^0.2.1-rc.2`，`@deepseek-ai/dsh-client-ui-primitives` `^0.1.7-rc.2 \|\| ^0.2.0-rc.2 \|\| ^0.2.1-rc.2`，`@deepseek-ai/cordis` `^4.0.1`，`@deepseek-ai/schemastery` `^3.18.1`；Node ≥ 22.19（含 24+）；Windows / macOS / Linux 全支持 |
+| **DSH（DeepSeek Harness）** | 以 DSH 插件形式运行于 web profile；支持区间由 `package.json` 的 `engines.dsh` 决定，写作 `>=0.1.2-rc.1 <0.1.3-0 \|\| >=0.1.5-rc.3 <0.1.6-0 \|\| >=0.1.7-rc.1 <0.1.8-0 \|\| >=0.2.0-rc.2 <0.2.1-0 \|\| >=0.2.1-rc.2 <0.2.2-0 \|\| >=0.2.2-alpha.2 <0.2.3-0`（闸门规则见下）；peer 依赖写同一套区间：`@deepseek-ai/dsh-agent` / `@deepseek-ai/dsh-session` / `@deepseek-ai/dsh-client-ui-primitives` `>=0.1.2-rc.1 <0.1.3-0 \|\| >=0.1.5-rc.3 <0.1.6-0 \|\| >=0.1.7-rc.1 <0.1.8-0 \|\| >=0.2.0-rc.2 <0.2.1-0 \|\| >=0.2.1-rc.2 <0.2.2-0 \|\| >=0.2.2-alpha.2 <0.2.3-0`，`@deepseek-ai/cordis` `^4.0.1`，`@deepseek-ai/schemastery` `^3.18.1`；Node ≥ 22.19（含 24+）；Windows / macOS / Linux 全支持 |
 | **WakaTime 云端** | 开箱即用对接 wakatime.com（心跳 API v1） |
 | **自托管 WakaTime** | 通过 **API URL** 设置支持任意 WakaTime 兼容服务端 |
 | **WakaTime 生态** | 自动读取标准 `~/.wakatime.cfg`，已有 API Key 无需重复配置 |
@@ -64,7 +64,7 @@ DeepSeek Harness（DSH）的 WakaTime 心跳上报插件。
 
 > **给插件作者的硬教训：peerDependencies 要写区间，不要写精确版本。** 宿主 0.2.1 一方包对 `@deepseek-ai/dsh-*` 的 peers 全部精确 pin 到同一版本（例：`@deepseek-ai/dsh-agent@0.2.1-rc.2` 的 dsh peers 全是 `0.2.1-rc.2`），插件照抄这种写法会在下一个 rc 上被闸门整片禁用。实证是本机 host 日志中的 `dsh: disabling profile plugin row "webhook-runtime"` 与 `dsh: disabling profile plugin row "webhook-github"` 记录：`@deepseek-ai/dsh-webhook@0.2.0-rc.2` 因 peers 写死 `"0.2.0-rc.2"`，在 dsh `0.2.1-rc.2` 下被逐行禁用，日志原文摘取 `Plugin @deepseek-ai/dsh-webhook@0.2.0-rc.2 is incompatible with dsh 0.2.1-rc.2: requirements {"@deepseek-ai/dsh-agent":"0.2.0-rc.2", "@deepseek-ai/dsh-invariants":"0.2.0-rc.2", …}`；本插件因写 `^0.2.0-rc.2`（在 `includePrerelease` 下覆盖 `0.2.1-rc.2`，精确匹配则不覆盖）而通过。
 
-peer 区间写成**逐代枚举**（`^0.1.1-rc.2 || … || ^0.2.1-rc.2`）而不是单条区间，是为了兼顾 node-semver 的默认比较方式：不带 `includePrerelease` 时，带预发布的版本要求比较器里存在同一 `[major.minor.patch]` 元组的锚点。`^0.2.1-rc.2` 展开为 `>=0.2.1-rc.2 <0.3.0-0`，锚点元组只有 `0.2.1` 与 `0.3.0`，因此用宿主自带 semver 在默认语义下实测：`satisfies('0.2.1-rc.2', '^0.2.1-rc.2')` 为真、`satisfies('0.2.1', '^0.2.1-rc.2')` 为真、`satisfies('0.2.2-rc.1', '^0.2.1-rc.2')` 为假。
+peer 区间写成**区间枚举**（`>=0.1.2-rc.1 <0.1.3-0 \|\| >=0.1.5-rc.3 <0.1.6-0 \|\| >=0.1.7-rc.1 <0.1.8-0 \|\| >=0.2.0-rc.2 <0.2.1-0 \|\| >=0.2.1-rc.2 <0.2.2-0 \|\| >=0.2.2-alpha.2 <0.2.3-0`）而不是 `^` 前缀，是因为 node-semver 默认比较方式（不带 `includePrerelease`）下，带预发布的版本要求比较器里存在同一 `[major.minor.patch]` 元组的锚点。`^0.2.1-rc.2` 展开为 `>=0.2.1-rc.2 <0.3.0-0`，锚点元组只有 `0.2.1` 与 `0.3.0`，因此 `satisfies('0.2.2-rc.1', '^0.2.1-rc.2')` 为**假**——宿主升到 0.2.2-rc.1 后，旧写法会把插件判成不兼容（本仓库 11-13 就踩了这一条，直到发版检查才发现）。区间写法显式给出 `>=0.2.2-alpha.2 <0.2.3-0` 这个跨版本段，才覆盖得住 0.2.2 的任意预发布。
 
 本次上游发布 `0.2.1-rc.2` 后，已按该规约在枚举中补入 `^0.2.1-rc.2`。这是**持续动作**：补一项只吃得住「该代 rc + 该代稳定版」，下一个 rc 代次仍需再补一项，任何单条区间都无法一次性向前覆盖未来的预发布代次。
 
