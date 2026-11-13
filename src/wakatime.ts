@@ -87,6 +87,36 @@ export interface WakaTimeClientConfig {
    * 由调用方注入而不是在这里读文件，客户端因此保持无文件系统依赖、可单测。
    */
   cfg_proxy?: string;
+  /**
+   * 设置页「代理地址」。非空时**优先级最高**，覆盖环境变量与 cfg。
+   * 特殊值 `none` 表示强制直连（用来临时绕过坏掉的代理，不必改环境或 cfg 文件）。
+   */
+  proxy_url?: string;
+  /**
+   * 设置页「不走代理的地址」。非空时覆盖 `NO_PROXY` 环境变量与宿主默认的表。
+   * 语义与宿主 `dsh-http-proxy` 的 `bypassesProxy` 一致（见该包 policy.d.ts）。
+   */
+  no_proxy?: string;
+}
+
+/**
+ * `proxy_url` 的直连哨兵值。
+ *
+ * 为什么需要它：留空表示"沿用环境变量 / cfg"，而用户常常需要一个明确的"这次不走代理"
+ * ——尤其是代理抖动时。给一个可读的字面量比再加一个布尔字段更容易在配置里看懂。
+ */
+export const PROXY_NONE = 'none';
+
+/**
+ * 设置项里写的 `no_proxy` 是否可以被采用。
+ *
+ * @param value - 设置页提交的值（可能是 ref 对象、null 等任意形状）。
+ * @returns 规范化后的串；不可用时为 undefined，表示"这一层没给"。
+ */
+export function usableNoProxy(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed === '' ? undefined : trimmed;
 }
 
 /** 环境变量里可能被使用的代理名（小写优先，与 undici 的读取顺序一致）。 */
@@ -95,24 +125,83 @@ const PROXY_ENV_NAMES = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy
 /**
  * 解析本进程应使用的出口代理。
  *
- * 优先级：环境变量 > ~/.wakatime.cfg 的 `proxy`。前者代表"这次启动明确要求的
- * 网络路径"（也是 DSH 自己所有出网走的口径），后者代表"WakaTime 生态的标准配置"，
- * wakatime-cli 读的就是它——插件不读就会成为同机上唯一不走代理的那条链路。
+ * 优先级（高一档覆盖低一档，**只有显式给了才往下退**）：
+ *   1. 设置页 `proxy_url`（用户在 WebUI 里改的，最直观也最该优先）；
+ *   2. 环境变量 `HTTPS_PROXY` / `https_proxy` / `HTTP_PROXY` / `http_proxy`
+ *      （代表"这次启动明确要求的网络路径"，也是 DSH 自己全部出网的口径）；
+ *   3. `~/.wakatime.cfg` 的 `[settings] proxy`——wakatime-cli 读的就是它，
+ *      插件不读就会成为同机上唯一不走代理的那条链路。
+ *
+ * `proxy_url` 支持两个显式值：`none` 强制直连；`direct` 同义。
+ * 非法 URL（比如漏了 `http://`）不会被静默采用，而是**跳过该层继续往下退**，
+ * 并通过 {@link resolveProxy} 的 `ignored` 告诉调用方，避免"配了却没生效"。
  *
  * @param env - 进程环境（默认 process.env，便于测试注入）。
  * @param cfgProxy - ~/.wakatime.cfg 的 proxy 值（可为空串）。
- * @returns 代理 URL；没有任何可用代理时为 null。
+ * @param setting - 设置页提交的 proxy_url 原始值（任意形状）。
+ * @returns 生效的代理（null＝直连）、来源标记，以及被忽略的层。
+ */
+export function resolveProxy(
+  env: Record<string, string | undefined> = process.env,
+  cfgProxy = '',
+  setting?: unknown,
+): { proxy: string | null; source: 'setting' | 'env' | 'cfg' | 'direct' | 'none'; ignored?: string } {
+  const isSupported = (value: string): boolean => {
+    try {
+      const parsed = new URL(value);
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    } catch {
+      return false;
+    }
+  };
+
+  let ignored: string | undefined;
+
+  // 1. 设置页
+  if (typeof setting === 'string') {
+    const value = setting.trim();
+    if (value !== '') {
+      if (value.toLowerCase() === PROXY_NONE || value.toLowerCase() === 'direct') {
+        return { proxy: null, source: 'none' };
+      }
+      if (isSupported(value)) return { proxy: value, source: 'setting' };
+      // 形状不对：记下被忽略的层，继续往下退——而不是让整条链路静默不走代理。
+      ignored = `设置页 proxy_url 不是合法的 http(s) 地址（${value.length} 字符），已忽略并继续回退`;
+    }
+  }
+
+  // 2. 环境变量
+  for (const key of PROXY_ENV_NAMES) {
+    const value = env[key];
+    if (typeof value === 'string' && value.trim() !== '' && isSupported(value.trim())) {
+      return { proxy: value.trim(), source: 'env', ignored };
+    }
+  }
+
+  // 3. ~/.wakatime.cfg
+  const fromCfg = cfgProxy.trim();
+  if (fromCfg !== '' && isSupported(fromCfg)) return { proxy: fromCfg, source: 'cfg', ignored };
+  if (fromCfg !== '' && ignored === undefined) {
+    ignored = '~/.wakatime.cfg 的 proxy 不是合法的 http(s) 地址，已忽略';
+  }
+
+  return { proxy: null, source: 'direct', ignored };
+}
+
+/**
+ * 只要代理 URL 的薄封装。
+ *
+ * @param env - 进程环境。
+ * @param cfgProxy - cfg 里的 proxy 值。
+ * @param setting - 设置页的值。
+ * @returns 代理 URL；null 表示直连。
  */
 export function resolveProxyUrl(
   env: Record<string, string | undefined> = process.env,
   cfgProxy = '',
+  setting?: unknown,
 ): string | null {
-  for (const key of PROXY_ENV_NAMES) {
-    const value = env[key];
-    if (typeof value === 'string' && value.trim() !== '') return value.trim();
-  }
-  const fromCfg = cfgProxy.trim();
-  return fromCfg === '' ? null : fromCfg;
+  return resolveProxy(env, cfgProxy, setting).proxy;
 }
 
 /**
@@ -147,29 +236,74 @@ export class WakaTimeClient {
   private retryAfter: number = 0;
   private authFailRetryAfter: number = 0;
   private proxyUrl: string | null;
+  /** 生效的不走代理表：设置项优先，其次 NO_PROXY 环境变量。 */
+  private noProxy: string;
+  /** 生效代理的来源（setting / env / cfg / direct / none），供日志与诊断。 */
+  private proxySource: 'setting' | 'env' | 'cfg' | 'direct' | 'none' = 'direct';
+  /** 解析过程中被忽略的配置层（供上层一次性告警后清空）。 */
+
+  private configDiagnostics: string[] = [];
   private requestTimeoutMs: number;
 
   constructor(config: WakaTimeClientConfig) {
     this.apiKey = config.api_key;
     this.baseUrl = `${config.api_url}/api/v1`;
     this.userAgent = `dsh/1.0.0 dsh-wakatime/1.0.0`;
-    this.proxyUrl = resolveProxyUrl(process.env, config.cfg_proxy);
+    const resolved = resolveProxy(process.env, config.cfg_proxy, config.proxy_url);
+    this.proxyUrl = resolved.proxy;
+    this.noProxy = usableNoProxy(config.no_proxy) ?? process.env.NO_PROXY ?? '';
+    // 被忽略的层必须说出来：配了代理却没生效，是排查里最费时间的一种。
+    if (resolved.ignored !== undefined) {
+      this.configDiagnostics.push(resolved.ignored);
+    }
+    this.proxySource = resolved.source;
     this.requestTimeoutMs = config.timeout_ms ?? DEFAULT_REQUEST_TIMEOUT_MS;
   }
 
   /**
    * Update client config (called when settings change from WebUI)
    */
-  updateConfig(config: Pick<WakaTimeClientConfig, 'api_key' | 'api_url' | 'timeout_ms' | 'cfg_proxy'>): void {
+  updateConfig(config: Pick<WakaTimeClientConfig, 'api_key' | 'api_url' | 'timeout_ms' | 'cfg_proxy' | 'proxy_url' | 'no_proxy'>): void {
     this.apiKey = config.api_key;
     this.baseUrl = `${config.api_url}/api/v1`;
-    this.proxyUrl = resolveProxyUrl(process.env, config.cfg_proxy);
+    const resolved = resolveProxy(process.env, config.cfg_proxy, config.proxy_url);
+    this.proxyUrl = resolved.proxy;
+    this.noProxy = usableNoProxy(config.no_proxy) ?? process.env.NO_PROXY ?? '';
+    // 被忽略的层必须说出来：配了代理却没生效，是排查里最费时间的一种。
+    if (resolved.ignored !== undefined) {
+      this.configDiagnostics.push(resolved.ignored);
+    }
+    this.proxySource = resolved.source;
     if (config.timeout_ms !== undefined) {
       this.requestTimeoutMs = config.timeout_ms;
     }
     // Reset retry timers on config update
     this.retryAfter = 0;
     this.authFailRetryAfter = 0;
+  }
+
+  /**
+   * 取走「配置层被忽略」的诊断信息。
+   *
+   * 读取即清空：这些消息由上层在合适的时机（启动、设置变更）打一次，
+   * 每次请求都重复打印会把真正的告警淹掉。
+   *
+   * @returns 自上次调用以来累积的消息；没有则为空数组。
+   */
+  takeConfigDiagnostics(): string[] {
+    const messages = this.configDiagnostics;
+    this.configDiagnostics = [];
+    return messages;
+  }
+
+  /**
+   * 当前生效代理的描述，用于启动日志。
+   *
+   * @returns 形如 `经代理 http://host:port（来源：设置页）` 或 `直连（来源：无配置）`。
+   */
+  describeProxy(): string {
+    const sourceLabel = { setting: '设置页', env: '环境变量', cfg: '~/.wakatime.cfg', direct: '无配置', none: '设置页强制直连' }[this.proxySource];
+    return this.proxyUrl === null ? `直连（来源：${sourceLabel}）` : `经代理 ${this.proxyUrl}（来源：${sourceLabel}）`;
   }
 
   async sendHeartbeat(payload: WakaTimeHeartbeat): Promise<HeartbeatSendResult> {
@@ -200,7 +334,7 @@ export class WakaTimeClient {
 
     let response: Response;
     const targetHost = new URL(url).hostname;
-    if (shouldUseProxy(this.proxyUrl, targetHost, process.env.NO_PROXY)) {
+    if (shouldUseProxy(this.proxyUrl, targetHost, this.noProxy)) {
       response = await this.fetchWithProxy(url, body);
     } else {
       try {

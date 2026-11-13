@@ -148,6 +148,8 @@ pnpm build
 3. 配置以下选项：
    - **API Key**：你的 WakaTime API key（以密码框形式展示）
    - **API URL**：服务基础地址（用于自托管 WakaTime）
+   - **代理地址 / Proxy URL**：`http://host:port`；留空依次回退 `HTTPS_PROXY` 环境变量与 `~/.wakatime.cfg` 的 `proxy`；填 `none` 强制直连
+   - **不走代理的地址 / No-proxy hosts**：逗号分隔，留空沿用 `NO_PROXY`；如填 `wakatime.com` 表示该域名直连
    - **Heartbeat Interval**：心跳发送间隔（60000–300000ms）
    - **Project Name**：覆盖自动识别的项目名
    - **Language**：覆盖自动识别的语言
@@ -299,9 +301,20 @@ src/
    三层都只接受**非空字符串**，形状不对会被忽略并继续回退，同时在告警里给出形状摘要。
    （设置页曾提供「项目名称」候选下拉，靠 `/users/current/projects` 拉取；该读端点
    现已对插件 key 返回 403，候选功能已移除，项目名称改为自由输入。）
-5. **检查到 WakaTime 的网络连通性，并注意代理口径。** 出口代理的优先级是
-   `HTTPS_PROXY` / `HTTP_PROXY` 环境变量 → `~/.wakatime.cfg` 的 `[settings] proxy`
-   （与 wakatime-cli 同一个来源），`NO_PROXY` 支持 `*`、精确主机与 `.suffix` 写法。
+5. **检查到 WakaTime 的网络连通性，并注意代理口径。** 出口代理按这个顺序取，**先命中先赢**：
+
+   | 优先级 | 来源 | 说明 |
+   |---|---|---|
+   | 1 | 设置页「代理地址」 | 填 `none` / `direct` 强制直连（应急切断代理） |
+   | 2 | `HTTPS_PROXY` / `https_proxy` / `HTTP_PROXY` / `http_proxy` | DSH 自己全部出网也走这条路 |
+   | 3 | `~/.wakatime.cfg` 的 `[settings] proxy` | wakatime-cli 读的就是它 |
+   | — | 都没有 → 直连 | |
+
+   上一档的值**不是合法 `http(s)` 地址时会被忽略并告警**，然后继续往下退——不会出现
+   "配了代理却没生效且毫无痕迹"。启动时 debug 模式会打一行
+   `网络出口 经代理 http://…（来源：设置页）`，直接回答"现在到底走了哪条"。
+   `NO_PROXY` / 「不走代理的地址」支持 `*`、精确主机与 `.suffix` 写法（`example.com`
+   也匹配其子域）。
    为什么插件要读 cfg：实测同一台机器上 curl 直连、curl 经代理、node 直连都 20/20 通，
    唯独插件间歇 `fetch failed（cause: ETIMEDOUT）`——因为它是同机上唯一不走代理的那条
    链路，而用户的代理本来就配在 cfg 里。诊断信息现在会带 `cause`（ECONNRESET /

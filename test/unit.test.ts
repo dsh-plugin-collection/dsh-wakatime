@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { resolveLanguage } from '../src/language.js';
 import { resolveProject, resolveBranch, resolveProjectRootCount, resolveDependencies, readWakatimeCfgApiKey, readWakatimeCfgProxy, maskApiKey, clearResolveCaches } from '../src/project.js';
-import { resolveProxyUrl, shouldUseProxy } from '../src/wakatime.js';
+import { resolveProxy, resolveProxyUrl, shouldUseProxy, PROXY_NONE } from '../src/wakatime.js';
 import { calculateWriteDiff, calculateEditDiff } from '../src/diff.js';
 import { clampEntity, clampField } from '../src/types.js';
 import { classifyShellCommand, firstRealCommand } from '../src/category.js';
@@ -695,6 +695,85 @@ describe('client/field-specs.ts', () => {
       // Switch 只会 stage 这两个字面量；手写的空串/其他值都是非法草稿
       expect(spec.parse('')).toBeUndefined();
       expect(spec.parse('1')).toBeUndefined();
+    });
+  });
+});
+
+describe('proxy resolution (wakatime.ts)', () => {
+  describe('resolveProxy：设置页 > 环境变量 > cfg', () => {
+    it('设置页的值优先级最高', () => {
+      const r = resolveProxy({ HTTPS_PROXY: 'http://env:1' }, 'http://cfg:2', 'http://setting:3');
+      expect(r.proxy).toBe('http://setting:3');
+      expect(r.source).toBe('setting');
+    });
+
+    it('设置为空则依次回退环境变量、cfg、直连', () => {
+      expect(resolveProxy({ HTTPS_PROXY: 'http://env:1' }, 'http://cfg:2', '').source).toBe('env');
+      expect(resolveProxy({}, 'http://cfg:2', '   ').source).toBe('cfg');
+      expect(resolveProxy({}, '', '').source).toBe('direct');
+    });
+
+    it('none / direct 表示强制直连，且不再往下回退', () => {
+      // 应急手段：代理坏掉时在设置页填 none 就能立刻改直连，
+      // 否则环境变量/cfg 会把它又“救”回代理。
+      for (const value of [PROXY_NONE, 'direct', 'NONE', ' Direct ']) {
+        const r = resolveProxy({ HTTPS_PROXY: 'http://env:1' }, 'http://cfg:2', value);
+        expect(r.proxy).toBeNull();
+        expect(r.source).toBe('none');
+      }
+    });
+
+    it('设置页填了非法地址：跳过该层并报告，而不是静默失效', () => {
+      // “配了代理却没生效”是排查里最费时间的一类，必须留下痕迹。
+      const r = resolveProxy({}, 'http://cfg:2', 'proxy.example:3128');
+      expect(r.proxy).toBe('http://cfg:2');
+      expect(r.source).toBe('cfg');
+      expect(r.ignored).toContain('proxy_url');
+    });
+
+    it('没有任何可用来源时直连，且非法层仍有告警', () => {
+      const r = resolveProxy({}, '', 'not-a-url');
+      expect(r.proxy).toBeNull();
+      expect(r.source).toBe('direct');
+      expect(r.ignored).toBeDefined();
+    });
+
+    it('只接受 http/https 代理', () => {
+      expect(resolveProxy({}, '', 'ftp://x:1').proxy).toBeNull();
+      expect(resolveProxy({}, '', 'socks5://x:1').proxy).toBeNull();
+      expect(resolveProxy({}, '', 'https://proxy:8443').proxy).toBe('https://proxy:8443');
+    });
+
+    it('非字符串（如未解包的 volatile ref）当作没给', () => {
+      expect(resolveProxy({}, 'http://cfg:2', { get: () => 'x' }).source).toBe('cfg');
+    });
+  });
+
+  describe('resolveProxyUrl（薄封装）', () => {
+    it('透传 resolveProxy 的结果', () => {
+      expect(resolveProxyUrl({}, '', 'http://setting:3')).toBe('http://setting:3');
+      expect(resolveProxyUrl({}, '', 'none')).toBeNull();
+      expect(resolveProxyUrl({}, 'http://cfg:2')).toBe('http://cfg:2');
+    });
+  });
+
+  describe('shouldUseProxy（NO_PROXY 语义）', () => {
+    it('没有代理时一律不走', () => {
+      expect(shouldUseProxy(null, 'wakatime.com', '')).toBe(false);
+      expect(shouldUseProxy('', 'wakatime.com', '')).toBe(false);
+    });
+
+    it('支持 *、精确主机与后缀写法', () => {
+      expect(shouldUseProxy('http://p:1', 'wakatime.com', '*')).toBe(false);
+      expect(shouldUseProxy('http://p:1', 'wakatime.com', 'wakatime.com')).toBe(false);
+      expect(shouldUseProxy('http://p:1', 'a.wakatime.com', '.wakatime.com')).toBe(false);
+      expect(shouldUseProxy('http://p:1', 'a.wakatime.com', 'wakatime.com')).toBe(false);
+      expect(shouldUseProxy('http://p:1', 'other.com', 'wakatime.com')).toBe(true);
+    });
+
+    it('忽略尾逗号产生的空项', () => {
+      expect(shouldUseProxy('http://p:1', 'a.com', 'a.com,')).toBe(false);
+      expect(shouldUseProxy('http://p:1', 'b.com', '')).toBe(true);
     });
   });
 });
