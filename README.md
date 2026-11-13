@@ -143,6 +143,8 @@ After installing and restarting DSH:
 3. Configure:
    - **API Key**: Your WakaTime API key (shown as password field)
    - **API URL**: Base URL (for self-hosted WakaTime)
+   - **Proxy URL**: `http://host:port`; empty falls back to `HTTPS_PROXY`, then `proxy` in `~/.wakatime.cfg`; `none` forces a direct connection
+   - **No-proxy hosts**: comma separated, empty inherits `NO_PROXY`; e.g. `wakatime.com` connects that host directly
    - **Heartbeat Interval**: How often to send heartbeats (60000-300000ms)
    - **Project Name**: Override auto-detected project name
    - **Language**: Override auto-detected language
@@ -297,10 +299,21 @@ src/
    (The settings page used to offer a "Project name" dropdown backed by
    `/users/current/projects`; that read endpoint now answers 403 for plugin keys, so the
    candidates were removed and the field is free text.)
-5. **Check connectivity to WakaTime, and note the proxy precedence.** Outbound proxy is
-   resolved as `HTTPS_PROXY` / `HTTP_PROXY` env vars → `proxy` under `[settings]` in
-   `~/.wakatime.cfg` (the same source wakatime-cli uses); `NO_PROXY` accepts `*`, exact
-   hosts and `.suffix` entries. Why the plugin reads the cfg at all: on this machine
+5. **Check connectivity to WakaTime, and note the proxy precedence.** The outbound proxy is
+   taken from the first source that yields a usable value:
+
+   | # | Source | Note |
+   |---|---|---|
+   | 1 | Settings page "Proxy URL" | `none` / `direct` forces a direct connection (cut a bad proxy in a hurry) |
+   | 2 | `HTTPS_PROXY` / `https_proxy` / `HTTP_PROXY` / `http_proxy` | the same path all of DSH's own egress uses |
+   | 3 | `proxy` under `[settings]` in `~/.wakatime.cfg` | the source wakatime-cli reads |
+   | — | none of the above | direct |
+
+   A value that is not a valid `http(s)` URL is **ignored with a warning** and resolution
+   continues to the next source — there is no silent "configured but not applied". With
+   debug mode on, startup logs a line `网络出口 经代理 http://…（来源：设置页）` that answers
+   which route is actually in use. `NO_PROXY` / "No-proxy hosts" accept `*`, exact hosts and
+   `.suffix` entries (`example.com` also matches its subdomains). Why the plugin reads the cfg at all: on this machine
    curl-direct, curl-via-proxy and node-direct were all 20/20 fine, yet the plugin
    intermittently failed with `fetch failed (cause: ETIMEDOUT)` — it was the only link on
    the box not using the proxy the user had configured. Network diagnostics now include

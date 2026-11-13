@@ -26,6 +26,11 @@ const zh = {
   fields: {
     api_key: { label: 'API Key', hint: 'WakaTime 密钥；留空时回退环境变量与 ~/.wakatime.cfg' },
     api_url: { label: 'API URL', hint: '自托管端点；留空使用官方 wakatime.com' },
+    proxy_url: {
+      label: '代理地址',
+      hint: 'http://host:port；留空依次回退 HTTPS_PROXY 环境变量与 ~/.wakatime.cfg 的 proxy。填 none 强制直连',
+    },
+    no_proxy: { label: '不走代理的地址', hint: '逗号分隔；留空沿用 NO_PROXY 环境变量。如 wakatime.com 表示该域名直连' },
     heartbeat_interval_ms: { label: '心跳间隔（毫秒）', hint: '60000–300000；批量发送的节拍' },
     include_tool_calls: { label: '追踪工具调用', hint: '记录文件读写、命令执行等工具调用' },
     include_user_messages: { label: '追踪用户消息', hint: '记录用户消息（增加心跳量）' },
@@ -103,6 +108,11 @@ const en = {
   fields: {
     api_key: { label: 'API Key', hint: 'WakaTime API key; falls back to env vars and ~/.wakatime.cfg when empty' },
     api_url: { label: 'API URL', hint: 'Self-hosted endpoint; leave empty for official wakatime.com' },
+    proxy_url: {
+      label: 'Proxy URL',
+      hint: 'http://host:port; empty falls back to the HTTPS_PROXY env var, then proxy in ~/.wakatime.cfg. Use none to force a direct connection',
+    },
+    no_proxy: { label: 'No-proxy hosts', hint: 'Comma separated; empty inherits NO_PROXY. e.g. wakatime.com connects directly' },
     heartbeat_interval_ms: { label: 'Heartbeat interval (ms)', hint: '60000–300000; cadence for batched sends' },
     include_tool_calls: { label: 'Track tool calls', hint: 'Log tool calls such as file reads/writes and command execution' },
     include_user_messages: { label: 'Track user messages', hint: 'Log user messages (increases heartbeat volume)' },

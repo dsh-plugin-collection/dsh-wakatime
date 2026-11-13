@@ -74,6 +74,8 @@ export const NUMBER_RANGES: Partial<Record<keyof Config, [number, number]>> = {
 export const CONFIG_DEFAULTS: Config = {
   api_key: '',
   api_url: 'https://wakatime.com',
+  proxy_url: '',
+  no_proxy: '',
   heartbeat_interval_ms: 120_000,
   project_name: '',
   language: '',
@@ -177,6 +179,8 @@ export function normalizeConfig(raw: unknown): { config: Config; degraded: Degra
     api_key: readString(source.api_key, CONFIG_DEFAULTS.api_key, 'api_key', degraded),
     api_url: apiUrl ?? CONFIG_DEFAULTS.api_url,
     heartbeat_interval_ms: readNumber(source.heartbeat_interval_ms, 'heartbeat_interval_ms', CONFIG_DEFAULTS.heartbeat_interval_ms, degraded),
+    proxy_url: readString(source.proxy_url, CONFIG_DEFAULTS.proxy_url, 'proxy_url', degraded),
+    no_proxy: readString(source.no_proxy, CONFIG_DEFAULTS.no_proxy, 'no_proxy', degraded),
     project_name: readString(source.project_name, CONFIG_DEFAULTS.project_name, 'project_name', degraded),
     language: readString(source.language, CONFIG_DEFAULTS.language, 'language', degraded),
     app_entity: readString(source.app_entity, CONFIG_DEFAULTS.app_entity, 'app_entity', degraded),
@@ -242,6 +246,8 @@ export function normalizeDocument(raw: unknown): { partial: Partial<Config>; deg
     else degraded.push({ field: 'api_url', shape: describeShape(source.api_url) });
   }
   putNumber('heartbeat_interval_ms');
+  putString('proxy_url');
+  putString('no_proxy');
   putString('project_name');
   putString('language');
   putString('app_entity');

@@ -32,6 +32,17 @@ export const inject = ['sessions'];
 export interface Config {
   api_key: string;
   api_url: string;
+  /**
+   * 出口代理地址（`http://host:port`）。非空时优先级最高，覆盖环境变量与
+   * `~/.wakatime.cfg`；填 `none` / `direct` 表示强制直连。
+   * 留空＝沿用环境变量 → cfg 的回退链（见 wakatime.ts 的 resolveProxy）。
+   */
+  proxy_url: string;
+  /**
+   * 不走代理的地址表（逗号分隔）。非空时覆盖 `NO_PROXY` 环境变量。
+   * 语义同宿主 `dsh-http-proxy`：`example.com` 也匹配其子域，支持 `*` 与 `.suffix`。
+   */
+  no_proxy: string;
   heartbeat_interval_ms: number;
   project_name: string;
   language: string;
@@ -57,6 +68,8 @@ const [CACHE_MIN, CACHE_MAX] = NUMBER_RANGES.cache_limit as [number, number];
 export const Config = Schema.object({
   api_key: Schema.string().default(CONFIG_DEFAULTS.api_key).role('secret').volatile(),
   api_url: Schema.string().default(CONFIG_DEFAULTS.api_url).volatile(),
+  proxy_url: Schema.string().default(CONFIG_DEFAULTS.proxy_url).volatile(),
+  no_proxy: Schema.string().default(CONFIG_DEFAULTS.no_proxy).volatile(),
   heartbeat_interval_ms: Schema.natural().min(INTERVAL_MIN).max(INTERVAL_MAX).default(CONFIG_DEFAULTS.heartbeat_interval_ms).volatile(),
   project_name: Schema.string().default(CONFIG_DEFAULTS.project_name).volatile(),
   language: Schema.string().default(CONFIG_DEFAULTS.language).volatile(),
@@ -227,7 +240,6 @@ export function apply(ctx: Context, config: Config): void {
     ctx.logger.info(message);
   };
 
-  debugLog(`dsh-wakatime: loaded with API key ${maskApiKey(apiKey)}`);
 
   /**
    * 交给客户端的配置：runtime 之外补上 `~/.wakatime.cfg` 里的代理。
@@ -235,9 +247,24 @@ export function apply(ctx: Context, config: Config): void {
    * 每次构造/更新都重读该文件：它由 wakatime-cli 维护，用户改它不需要重启 DSH，
    * 而文件只有几十字节，读失败也只是"不用 cfg 代理"，不影响环境变量优先级。
    */
-  const clientConfig = () => ({ ...runtime, cfg_proxy: readWakatimeCfgProxy() });
+  const clientConfig = () => ({
+    ...runtime,
+    api_key: runtime.api_key,
+    api_url: runtime.api_url,
+    proxy_url: runtime.proxy_url,
+    no_proxy: runtime.no_proxy,
+    cfg_proxy: readWakatimeCfgProxy(),
+  });
 
   const client = new WakaTimeClient(clientConfig());
+
+  debugLog(`dsh-wakatime: loaded with API key ${maskApiKey(apiKey)}`);
+  // 代理口径必须可见：三个来源（设置页 / 环境变量 / cfg）谁生效、谁被忽略，
+  // 是排查"配了代理却没生效"最短的路径。
+  debugLog(`dsh-wakatime: 网络出口 ${client.describeProxy()}${runtime.no_proxy ? `，no_proxy=${runtime.no_proxy}` : ''}`);
+  for (const message of client.takeConfigDiagnostics()) {
+    warnOut(ctx, `dsh-wakatime: ${message}`);
+  }
   const cache = new HeartbeatCache(runtime);
 
   // Use WeakMap for session states as specified in PRD
@@ -315,6 +342,10 @@ export function apply(ctx: Context, config: Config): void {
 
     // client 持有配置快照，重建成含最新 cfg 代理的那份
     client.updateConfig(clientConfig());
+    for (const message of client.takeConfigDiagnostics()) {
+      warnOut(ctx, `dsh-wakatime: ${message}`);
+    }
+    debugLog(`dsh-wakatime: 网络出口 ${client.describeProxy()}`);
     // 心跳间隔变更需要重建在跑定时器，其余字段在事件到达时读 runtime 即时生效
     if (runtime.heartbeat_interval_ms !== prevInterval) {
       restartActiveTimers();

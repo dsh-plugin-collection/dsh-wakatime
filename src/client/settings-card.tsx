@@ -52,6 +52,9 @@ export const WAKATIME_FIELDS: ReadonlyArray<{
   // —— API ——
   { key: 'api_key', kind: 'secret', section: 'api' },
   { key: 'api_url', kind: 'text', section: 'api' },
+  // 代理放在 API 分组：它是"怎么连到 WakaTime"的一部分，不是追踪行为。
+  { key: 'proxy_url', kind: 'text', section: 'api' },
+  { key: 'no_proxy', kind: 'text', section: 'api' },
   // —— 追踪 ——
   { key: 'heartbeat_interval_ms', kind: 'number', section: 'tracking', min: 60000, max: 300000 },
   { key: 'include_tool_calls', kind: 'boolean', section: 'tracking' },
