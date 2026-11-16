@@ -96,14 +96,15 @@ dsh plugin --profile web add /path/to/dsh-wakatime-plugin
 
 ### Git Install
 
-From the internal Gitea:
+### Internal distribution
+
+This plugin is distributed on an internal Gitea as a private repository. **The internal host is
+deliberately not written into public docs** — to install from inside the network, ask the
+maintainer for the repository URL, then:
 
 ```bash
-# Install from Gitea
-dsh plugin --profile web add http://gitea.internal/dsh-plugins/dsh-wakatime-plugin.git
-
-# Install a pinned commit (recommended for security)
-dsh plugin --profile web add http://gitea.internal/dsh-plugins/dsh-wakatime-plugin.git#<commit-sha>
+# Install a pinned commit (recommended: avoids following unverified changes)
+dsh plugin --profile web add <internal-repo-url>#<commit-sha>
 ```
 
 Or from GitHub (or any other git host):
