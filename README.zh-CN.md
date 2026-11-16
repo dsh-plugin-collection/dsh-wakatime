@@ -114,7 +114,7 @@ dsh plugin --profile web add <内部仓库地址>#<commit-sha>
 或从 GitHub（或其他任意 git 托管平台）安装：
 
 ```bash
-dsh plugin --profile web add github:your-username/dsh-wakatime-plugin
+dsh plugin --profile web add github:dsh-plugin-collection/dsh-wakatime-plugin
 ```
 
 ### 从源码构建

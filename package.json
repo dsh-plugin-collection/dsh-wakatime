@@ -1,5 +1,5 @@
 {
-  "name": "dsh-wakatime",
+  "name": "dsh-wakatime-plugin",
   "version": "1.0.0",
   "description": "WakaTime heartbeat reporting for DeepSeek Harness",
   "icon": "./icon.svg",
@@ -86,10 +86,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/dsh-plugin-collection/dsh-wakatime.git"
+    "url": "git+https://github.com/dsh-plugin-collection/dsh-wakatime-plugin.git"
   },
-  "homepage": "https://github.com/dsh-plugin-collection/dsh-wakatime",
+  "homepage": "https://github.com/dsh-plugin-collection/dsh-wakatime-plugin",
   "bugs": {
-    "url": "https://github.com/dsh-plugin-collection/dsh-wakatime/issues"
+    "url": "https://github.com/dsh-plugin-collection/dsh-wakatime-plugin/issues"
   }
 }

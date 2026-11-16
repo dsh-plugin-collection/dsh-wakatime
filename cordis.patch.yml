@@ -1,6 +1,6 @@
 - insert:
-    - id: dsh-wakatime
-      name: 'dsh-wakatime'
+    - id: dsh-wakatime-plugin
+      name: 'dsh-wakatime-plugin'
       # 订正（11-10）：这里此前写的注释把「插件收到 api_key 是对象」归因于
       # `!!js` 在 bundle 层不被求值，那是误判。真实机制是：字段标了 `.volatile()`，
       # cosmokit 就以 `Object.freeze({ get, [write] })` 的 ref 对象交给 apply()，

@@ -18,12 +18,12 @@ import { readWakatimeCfgApiKey, readWakatimeCfgProxy, maskApiKey } from './proje
 import { CONFIG_DEFAULTS, NUMBER_RANGES, normalizeConfig, normalizeDocument, plainValue, type DegradedField } from './config-value.js';
 import { applyBanner } from './build-stamp.js';
 
-export const name = 'dsh-wakatime';
+export const name = 'dsh-wakatime-plugin';
 export const inject = ['sessions'];
 
 /**
  * 0.2.0 配置迁移：`Config` 用 `.volatile()` 标记用户可调字段，
- * 内核自动把 Config 投影成设置页（ns = Loader 条目 id = `dsh-wakatime`）。
+ * 内核自动把 Config 投影成设置页（ns = Loader 条目 id = `dsh-wakatime-plugin`）。
  * 不再需要 `ctx.settings.register()`（该 API 在 0.1.7 已删除）。
  *
  * 注意：`.volatile()` 意味着宿主把字段以 volatile ref **对象**交给 apply()，

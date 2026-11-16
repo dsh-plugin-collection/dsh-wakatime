@@ -110,7 +110,7 @@ dsh plugin --profile web add <internal-repo-url>#<commit-sha>
 Or from GitHub (or any other git host):
 
 ```bash
-dsh plugin --profile web add github:your-username/dsh-wakatime-plugin
+dsh plugin --profile web add github:dsh-plugin-collection/dsh-wakatime-plugin
 ```
 
 ### Build from Source
