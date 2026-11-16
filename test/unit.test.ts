@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { resolveLanguage } from '../src/language.js';
 import { resolveProject, resolveBranch, resolveProjectRootCount, resolveDependencies, readWakatimeCfgApiKey, readWakatimeCfgProxy, maskApiKey, clearResolveCaches } from '../src/project.js';
-import { resolveProxy, resolveProxyUrl, shouldUseProxy, PROXY_NONE } from '../src/wakatime.js';
+import { resolveProxy, resolveProxyUrl, shouldUseProxy, PROXY_NONE, maskProxyUrl } from '../src/wakatime.js';
 import { calculateWriteDiff, calculateEditDiff } from '../src/diff.js';
 import { clampEntity, clampField } from '../src/types.js';
 import { classifyShellCommand, firstRealCommand } from '../src/category.js';
@@ -774,6 +774,51 @@ describe('proxy resolution (wakatime.ts)', () => {
     it('忽略尾逗号产生的空项', () => {
       expect(shouldUseProxy('http://p:1', 'a.com', 'a.com,')).toBe(false);
       expect(shouldUseProxy('http://p:1', 'b.com', '')).toBe(true);
+    });
+  });
+});
+
+describe('代理凭据安全（wakatime.ts）', () => {
+  describe('maskProxyUrl：日志里不得出现代理密码', () => {
+    it('抹掉用户名与密码，保留主机与端口', () => {
+      // 这一层存在的唯一理由：诊断日志是给人看的，会进日志文件、也会被贴进 issue。
+      // 直接拼原始 URL 等于把密码写出去。
+      const masked = maskProxyUrl('http://alice:S3cr3t@proxy.corp:8080');
+      expect(masked).not.toContain('S3cr3t');
+      expect(masked).not.toContain('alice');
+      expect(masked).toContain('proxy.corp');
+      expect(masked).toContain('8080');
+    });
+
+    it('只有用户名时也要抹掉', () => {
+      expect(maskProxyUrl('http://user@proxy:3128')).not.toContain('user');
+    });
+
+    it('没有凭据时原样保留（排障需要看到实际代理）', () => {
+      expect(maskProxyUrl('http://proxy:3128')).toContain('proxy:3128');
+    });
+
+    it('无法解析的地址不回显原文（原文里可能就有凭据）', () => {
+      const masked = maskProxyUrl('alice:S3cr3t@bad url');
+      expect(masked).not.toContain('S3cr3t');
+    });
+
+    it('null / 空串原样返回', () => {
+      expect(maskProxyUrl(null)).toBeNull();
+      expect(maskProxyUrl('')).toBe('');
+    });
+  });
+
+  describe('describeProxy 输出必须是脱敏的', () => {
+    it('带凭据的代理进日志前已被抹掉', async () => {
+      const { WakaTimeClient } = await import('../src/wakatime.js');
+      const client = new WakaTimeClient({
+        api_key: 'k', api_url: 'https://wakatime.com',
+        cfg_proxy: '', proxy_url: 'http://alice:S3cr3t@proxy.corp:8080',
+      });
+      const described = client.describeProxy();
+      expect(described).not.toContain('S3cr3t');
+      expect(described).toContain('proxy.corp');
     });
   });
 });
