@@ -101,14 +101,14 @@ dsh plugin --profile web add /path/to/dsh-wakatime-plugin
 
 ### 从 Git 仓库安装
 
-从内网 Gitea 安装：
+### 内部分发
+
+本插件在内部 Gitea 上以私有库分发。**内网地址不写进公开文档**——需要从内网安装时，
+向维护者索取仓库地址，格式为：
 
 ```bash
-# 从 Gitea 安装
-dsh plugin --profile web add http://gitea.internal/dsh-plugins/dsh-wakatime-plugin.git
-
-# 安装固定 commit（出于安全考虑推荐这种方式）
-dsh plugin --profile web add http://gitea.internal/dsh-plugins/dsh-wakatime-plugin.git#<commit-sha>
+# 安装固定 commit（推荐：避免跟到未经验证的改动）
+dsh plugin --profile web add <内部仓库地址>#<commit-sha>
 ```
 
 或从 GitHub（或其他任意 git 托管平台）安装：

@@ -86,10 +86,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+http://gitea.internal/dsh-plugins/dsh-wakatime-plugin.git"
+    "url": "git+https://github.com/dsh-plugin-collection/dsh-wakatime.git"
   },
-  "homepage": "http://gitea.internal/dsh-plugins/dsh-wakatime-plugin",
+  "homepage": "https://github.com/dsh-plugin-collection/dsh-wakatime",
   "bugs": {
-    "url": "http://gitea.internal/dsh-plugins/dsh-wakatime-plugin/issues"
+    "url": "https://github.com/dsh-plugin-collection/dsh-wakatime/issues"
   }
 }
