@@ -6,15 +6,15 @@
 
 **English** | [简体中文](./README.zh-CN.md)
 
-**Your time inside DSH, in your WakaTime dashboard.**
+**Your time inside DSH, in your [WakaTime](https://wakatime.com) dashboard.**
 
-> A WakaTime heartbeat plugin for DeepSeek Harness: tracks AI-assisted coding activity — every tool call, every shell command, every turn — grouped by **project / language / category**, with AI token reporting.
+> A [WakaTime](https://wakatime.com) heartbeat plugin for DeepSeek Harness: tracks AI-assisted coding activity — every tool call, every shell command, every turn — grouped by **project / language / category**, with AI token reporting.
 
 > Community integration. Not affiliated with WakaTime.
 
 ## What this is
 
-Activity inside DSH never reaches WakaTime on its own: WakaTime is fed by editor plugins, while your work here happens in a terminal and in AI conversations. This plugin bridges that gap — it listens to DSH events and turns them into WakaTime heartbeats.
+Activity inside DSH never reaches WakaTime on its own: [WakaTime](https://wakatime.com) is fed by editor plugins, while your work here happens in a terminal and in AI conversations. This plugin bridges that gap — it listens to DSH events and turns them into WakaTime heartbeats.
 
 - a `write` / `edit` → one heartbeat with line counts and language
 - a `bash` command → one `app` heartbeat whose category comes from the command itself
@@ -45,7 +45,7 @@ All four panels are fed by this plugin:
 dsh plugin --profile web add dsh-wakatime-plugin
 ```
 
-**Restart `dsh web`** afterwards. Then open **Settings → WakaTime** and paste your API key.
+**Restart `dsh web`** afterwards. Then open **Settings → WakaTime** and paste your [API key](https://wakatime.com/settings/api-key).
 
 <details>
 <summary>Other install methods</summary>
@@ -82,7 +82,7 @@ Everything lives in **Settings → WakaTime** and takes effect on save — no re
 | Setting | Description |
 |---|---|
 | **API Key** | WakaTime API key (masked input). When empty it falls back to `WAKATIME_API_KEY`, then `~/.wakatime.cfg`, then `cordis.patch.yml` |
-| **API URL** | Service endpoint, default `https://wakatime.com`; set your own for self-hosted |
+| **API URL** | Service endpoint, default `https://wakatime.com`; set your own for a self-hosted [WakaTime](https://wakatime.com) |
 | **Proxy URL** | `http://host:port`. Empty falls back to `HTTPS_PROXY`, then `proxy` in `~/.wakatime.cfg`; `none` forces a direct connection |
 | **No-proxy hosts** | Comma separated, empty inherits `NO_PROXY`. e.g. `wakatime.com` connects that host directly |
 | **Heartbeat interval** | 60000–300000 ms |
@@ -101,7 +101,7 @@ Four steps to confirm it works:
 1. **Check the log** — after restart you should see `loaded with API key waka_****xxxx`;
 2. **Make DSH do something** — read a file, run a command;
 3. **Wait one heartbeat cycle** (120 s by default) until a flush succeeds;
-4. **Open the WakaTime dashboard** — today's time, projects and languages should show the activity.
+4. **Open the [WakaTime dashboard](https://wakatime.com/dashboard)** — today's time, projects and languages should show the activity.
 
 If step 3 stays quiet, check the local cache first:
 
@@ -119,7 +119,7 @@ wc -l ~/.dsh/wakatime/heartbeat-cache.jsonl
 | **DSH** | Supported range is `engines.dsh` in `package.json`; currently covers generations `0.1.2` – `0.2.3` (prereleases included). The host validates it at startup and disables the plugin on a mismatch |
 | **Node** | >= 22.19 (including 24+) |
 | **Platform** | Windows / macOS / Linux |
-| **WakaTime** | wakatime.com, or any WakaTime-compatible self-hosted server |
+| **WakaTime** | [wakatime.com](https://wakatime.com), or any WakaTime-compatible self-hosted server |
 | **Other telemetry plugins** | One heartbeat backend per profile — do not run codetime or similar alongside |
 
 ## Category mapping

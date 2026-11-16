@@ -6,15 +6,15 @@
 
 [English](./README.md) | **简体中文**
 
-**把在 DSH 里花的时间，记进你的 WakaTime 面板。**
+**把在 DSH 里花的时间，记进你的 [WakaTime](https://wakatime.com) 面板。**
 
-> DeepSeek Harness 的 WakaTime 心跳插件：追踪 AI 辅助编码活动——每个工具调用、每次命令、每轮对话——按**项目 / 语言 / 类别**归集，并上报 AI token 用量。
+> DeepSeek Harness 的 [WakaTime](https://wakatime.com) 心跳插件：追踪 AI 辅助编码活动——每个工具调用、每次命令、每轮对话——按**项目 / 语言 / 类别**归集，并上报 AI token 用量。
 
 > 本项目为社区集成，与 WakaTime 官方无隶属关系。
 
 ## 这是什么
 
-DSH 里的活动原本不会出现在 WakaTime 上：WakaTime 靠编辑器插件上报，而你在 DSH 里的工作发生在终端和 AI 对话里。本插件补上这一段——它监听 DSH 的事件，转成 WakaTime 心跳发出去。
+DSH 里的活动原本不会出现在 WakaTime 上：[WakaTime](https://wakatime.com) 靠编辑器插件上报，而你在 DSH 里的工作发生在终端和 AI 对话里。本插件补上这一段——它监听 DSH 的事件，转成 WakaTime 心跳发出去。
 
 - 一条 `write` / `edit` → 一条带行数与语言的心跳
 - 一条 `bash` 命令 → 一条按命令内容判定类别的 `app` 心跳
@@ -45,7 +45,7 @@ DSH 里的活动原本不会出现在 WakaTime 上：WakaTime 靠编辑器插件
 dsh plugin --profile web add dsh-wakatime-plugin
 ```
 
-装完**重启 `dsh web`** 生效。然后到 **设置 → WakaTime** 填 API Key。
+装完**重启 `dsh web`** 生效。然后到 **设置 → WakaTime** 填 [API Key](https://wakatime.com/settings/api-key)。
 
 <details>
 <summary>其他安装方式</summary>
@@ -82,7 +82,7 @@ dsh plugin --profile web add <内部仓库地址>#<commit-sha>
 | 项 | 说明 |
 |---|---|
 | **API Key** | WakaTime API key（密码框展示）。留空时依次回退环境变量 `WAKATIME_API_KEY` → `~/.wakatime.cfg` → `cordis.patch.yml` |
-| **API URL** | 服务地址，默认 `https://wakatime.com`；自托管 WakaTime 填自己的 |
+| **API URL** | 服务地址，默认 `https://wakatime.com`；自托管 [WakaTime](https://wakatime.com) 填自己的 |
 | **代理地址** | `http://host:port`。留空依次回退 `HTTPS_PROXY` → `~/.wakatime.cfg` 的 `proxy`；填 `none` 强制直连 |
 | **不走代理的地址** | 逗号分隔，留空沿用 `NO_PROXY`。如 `wakatime.com` 表示该域名直连 |
 | **心跳间隔** | 60000–300000 ms |
@@ -101,7 +101,7 @@ dsh plugin --profile web add <内部仓库地址>#<commit-sha>
 1. **看日志**——重启后应有 `loaded with API key waka_****xxxx`；
 2. **让 DSH 做点事**——读一个文件、跑一条命令；
 3. **等一个心跳周期**（默认 120 秒），日志出现发送成功；
-4. **打开 WakaTime 面板**——今天的时间、项目、语言三项应出现对应记录。
+4. **打开 [WakaTime 面板](https://wakatime.com/dashboard)**——今天的时间、项目、语言三项应出现对应记录。
 
 如果第 3 步没动静，先看本地缓存：
 
@@ -119,7 +119,7 @@ wc -l ~/.dsh/wakatime/heartbeat-cache.jsonl
 | **DSH** | 支持范围见 `package.json` 的 `engines.dsh`；当前覆盖 `0.1.2` ~ `0.2.3` 各代（含预发布）。宿主启动时会校验，不匹配会禁用插件 |
 | **Node** | ≥ 22.19（含 24+） |
 | **平台** | Windows / macOS / Linux |
-| **WakaTime** | 官方 wakatime.com，或任意 WakaTime 兼容自托管服务 |
+| **WakaTime** | 官方 [wakatime.com](https://wakatime.com)，或任意 WakaTime 兼容自托管服务 |
 | **其他遥测插件** | 每个 profile 只保留一个心跳后端，勿与 codetime 等同类插件同时启用 |
 
 ## 类别映射
