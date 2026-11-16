@@ -189,6 +189,40 @@ export function resolveProxy(
 }
 
 /**
+ * 把代理 URL 里的凭据抹掉，用于日志与错误消息。
+ *
+ * 为什么必须有这一层：`http://user:pass@host:port` 是合法的代理写法，
+ * 而诊断日志（启动时的「网络出口 …」、设置变更后的重打）是给人看的，
+ * 直接拼进消息就等于把密码写进日志文件，还会随 bug report 外流。
+ *
+ * 保留协议、匿名化的用户名、主机与端口——排障需要知道"走的是哪台代理"，
+ * 但不需要知道"用什么身份"。
+ *
+ * @param proxyUrl - 原始代理 URL；null / 空串原样返回。
+ * @returns 脱敏后的 URL；解析失败时返回 `<无法解析的代理地址>`（绝不回显原文）。
+ */
+export function maskProxyUrl(proxyUrl: string | null): string | null {
+  if (proxyUrl === null || proxyUrl === '') return proxyUrl;
+  try {
+    const parsed = new URL(proxyUrl);
+    // 只处理 http(s)：`new URL('alice:S3cr3t@bad url')` 不会抛错，而是把 `alice:` 当成
+    // 协议、把整串塞进 href——username/password 为空，于是原样回显，密码照漏不误。
+    // 非 http(s) 的输入结构不可信，一律整体遮蔽，不做任何保留。
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return '<非 http(s) 的代理地址>';
+    }
+    if (parsed.username !== '' || parsed.password !== '') {
+      parsed.username = '***';
+      parsed.password = '***';
+    }
+    return parsed.toString();
+  } catch {
+    // 解析失败时不能回显原文——原文里可能就含着凭据。
+    return '<无法解析的代理地址>';
+  }
+}
+
+/**
  * 只要代理 URL 的薄封装。
  *
  * @param env - 进程环境。
@@ -303,7 +337,8 @@ export class WakaTimeClient {
    */
   describeProxy(): string {
     const sourceLabel = { setting: '设置页', env: '环境变量', cfg: '~/.wakatime.cfg', direct: '无配置', none: '设置页强制直连' }[this.proxySource];
-    return this.proxyUrl === null ? `直连（来源：${sourceLabel}）` : `经代理 ${this.proxyUrl}（来源：${sourceLabel}）`;
+    // 必须是脱敏后的地址：这里会进宿主日志，也会被用户贴进 issue。
+    return this.proxyUrl === null ? `直连（来源：${sourceLabel}）` : `经代理 ${maskProxyUrl(this.proxyUrl)}（来源：${sourceLabel}）`;
   }
 
   async sendHeartbeat(payload: WakaTimeHeartbeat): Promise<HeartbeatSendResult> {
@@ -463,6 +498,13 @@ export class WakaTimeClient {
         settle(new WakaTimeError(`WakaTime API 请求超时（${this.requestTimeoutMs}ms，经代理）`));
       }, this.requestTimeoutMs);
 
+      // 代理认证：`http://user:pass@host` 形式的凭据此前被解析出来却从未发出，
+      // 于是需要认证的代理一律 407，而用户只看到「连不上」，无从判断是密码错了还是网络断了。
+      // Basic 凭据要按 RFC 7617 用 latin1 编码，不能走 btoa（非 ASCII 密码会抛 InvalidCharacterError）。
+      const proxyAuth = (proxyParsed.username !== '' || proxyParsed.password !== '')
+        ? 'Basic ' + Buffer.from(`${decodeURIComponent(proxyParsed.username)}:${decodeURIComponent(proxyParsed.password)}`, 'utf8').toString('base64')
+        : null;
+
       const connectOptions = {
         hostname: proxyParsed.hostname,
         port: parseInt(proxyParsed.port, 10) || 80,
@@ -470,6 +512,7 @@ export class WakaTimeClient {
         path: connectReq,
         headers: {
           'Host': connectReq,
+          ...(proxyAuth === null ? {} : { 'Proxy-Authorization': proxyAuth }),
         },
       };
 
@@ -478,7 +521,9 @@ export class WakaTimeClient {
       connectRequest.on('connect', (res, socket) => {
         if (res.statusCode !== 200) {
           socket.destroy();
-          settle(new Error(`Proxy CONNECT failed with status ${res.statusCode}`));
+          // 407 单独点明：这是凭据问题，不是网络问题，两种排查方向完全不同。
+          const hint = res.statusCode === 407 ? '（代理要求认证：检查代理地址里的 user:pass）' : '';
+          settle(new Error(`Proxy CONNECT failed with status ${res.statusCode}${hint}`));
           return;
         }
         activeSocket = socket;
