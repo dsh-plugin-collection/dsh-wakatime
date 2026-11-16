@@ -1,347 +1,256 @@
 <p align="center">
-  <img src="assets/logo.svg" width="128" alt="dsh-wakatime logo"/>
+  <img src="assets/logo.svg" width="128" alt="dsh-wakatime-plugin logo"/>
 </p>
 
-# dsh-wakatime
+# dsh-wakatime-plugin
 
-English | [简体中文](./README.zh-CN.md)
+**English** | [简体中文](./README.zh-CN.md)
 
-WakaTime heartbeat reporting for DeepSeek Harness (DSH).
+**Your time inside DSH, in your WakaTime dashboard.**
 
-Track your AI-assisted coding activity and sync it to your [WakaTime](https://wakatime.com) dashboards.
+> A WakaTime heartbeat plugin for DeepSeek Harness: tracks AI-assisted coding activity — every tool call, every shell command, every turn — grouped by **project / language / category**, with AI token reporting.
 
-> **Note**: This is a community integration and is not officially affiliated with WakaTime.
+> Community integration. Not affiliated with WakaTime.
 
-## Features
+## What this is
 
-- **File-level tracking** — every tool call (write, edit, read, bash, grep, glob, etc.) generates a precise WakaTime heartbeat
-- **Smart project detection** — auto-detects project name from git, package.json, or directory
-- **Branch tracking** — reports which git branch you're working on
-- **Language inference** — detects programming language from file extension
-- **Line statistics** — reports additions/deletions for write/edit operations
-- **AI token reporting** — attaches `ai_input_tokens` / `ai_cached_input_tokens` / `ai_output_tokens` / `ai_prompt_length` / `ai_session` to assistant heartbeats (WakaTime GenAI metrics); requires **Track AI Messages**
+Activity inside DSH never reaches WakaTime on its own: WakaTime is fed by editor plugins, while your work here happens in a terminal and in AI conversations. This plugin bridges that gap — it listens to DSH events and turns them into WakaTime heartbeats.
 
-  Semantics (the usual reason numbers disagree with a local dashboard): the host's `TokenUsage` input components are **disjoint** — `inputTokens` is the uncached part only, cache hits are `cacheReadTokens`, and billed input is the sum of the three. This plugin reports the uncached part as `ai_input_tokens` and cache hits as `ai_cached_input_tokens`, and **never adds them together**; `cacheWriteTokens` has no WakaTime counterpart and is not reported. Measured sample: one session billed 80.1M input of which 78.7M (98%+) was cache hits — an implementation that only reports the uncached part makes WakaTime's Tokens two orders of magnitude smaller than a local context panel.
-- **Heartbeat merging** — coalesces rapid operations on the same file within 5 seconds
-- **Batch sending** — sends up to 25 heartbeats per HTTP request (WakaTime limit)
-- **Request timeouts** — every HTTP request (10s) and git probe (5s) has a hard timeout, so a hanging endpoint can never stall flushing
-- **Inference caching** — project name / branch / dependencies are resolved once per working directory and cached for 60 seconds instead of spawning git on every tool call
-- **Per-item visibility on batch sends** — `heartbeats.bulk` answers with an outer 2xx plus a status per heartbeat; the plugin inspects each one: 4xx validation failures are permanent (dropped, warned with the server's reason), 429/5xx go back to the cache for retry. String fields are pre-clamped to the server's hard limits (`entity` ≤ 2083, `project` / `branch` ≤ 1024; empty strings are rejected too, so such fields are simply omitted)
-- **Safe cache flushes** — concurrent flushes are serialized; only heartbeats that provably did not land are written back — nothing already stored is re-sent, and permanently invalid entries no longer hold cache slots
-- **Live settings** — all WebUI settings take effect immediately: toggles are checked per event, heartbeat interval changes rebuild timers in place
-- **Local caching** — caches failed heartbeats locally, retries on next successful send; failures and drops are always warned with their reason, not only under debug mode
-- **WebUI configuration** — configure all settings from the WebUI settings panel (no need to edit config files)
+- a `write` / `edit` → one heartbeat with line counts and language
+- a `bash` command → one `app` heartbeat whose category comes from the command itself
+- an AI turn → one `ai coding` heartbeat carrying token usage
 
-## Compatibility
+What it does not do: patch DSH internals, bundle host components, or store anything beyond the local retry cache.
 
-The plugin is a bridge between two systems: it runs **inside DSH** and speaks the **WakaTime API**.
+## Preview
 
-| Side | Compatibility |
+The WakaTime dashboard after installing:
+
+<p align="center">
+  <img src="docs/media/screenshot-dashboard.png" width="900" alt="WakaTime dashboard with DSH-fed project, category, language and editor stats"/>
+</p>
+
+All four panels are fed by this plugin:
+
+| Panel | Source |
 |---|---|
-| **DSH (DeepSeek Harness)** | Runs as a DSH plugin on the web profile; the supported range is decided by `engines.dsh` in `package.json`, written as `>=0.1.2-rc.1 <0.1.3-0 \|\| >=0.1.5-rc.3 <0.1.6-0 \|\| >=0.1.7-rc.1 <0.1.8-0 \|\| >=0.2.0-rc.2 <0.2.1-0 \|\| >=0.2.1-rc.2 <0.2.2-0 \|\| >=0.2.2-alpha.2 <0.2.3-0` (gate rules below); peer deps use the same range: `@deepseek-ai/dsh-agent` / `@deepseek-ai/dsh-session` / `@deepseek-ai/dsh-client-ui-primitives` `>=0.1.2-rc.1 <0.1.3-0 \|\| >=0.1.5-rc.3 <0.1.6-0 \|\| >=0.1.7-rc.1 <0.1.8-0 \|\| >=0.2.0-rc.2 <0.2.1-0 \|\| >=0.2.1-rc.2 <0.2.2-0 \|\| >=0.2.2-alpha.2 <0.2.3-0`, `@deepseek-ai/cordis` `^4.0.1`, `@deepseek-ai/schemastery` `^3.18.1`; Node >= 22.19 (including 24+); Windows / macOS / Linux |
-| **WakaTime cloud** | Works with wakatime.com out of the box (Heartbeat API v1) |
-| **Self-hosted WakaTime** | Supported via the **API URL** setting — any WakaTime-compatible server |
-| **WakaTime ecosystem** | Reads the standard `~/.wakatime.cfg`, so an existing API key is picked up automatically |
-| **Other telemetry plugins** | Use one heartbeat backend per DSH profile; don't enable alongside similar plugins (e.g. codetime) |
+| **Projects** | Each heartbeat's `project`, inferred from git / `package.json` / directory name |
+| **Categories** | Tool → category mapping (see [Category mapping](#category-mapping)) |
+| **Languages** | Inferred from file extensions |
+| **Editors** | Derived from the heartbeat `User-Agent` (`dsh/1.0.0 dsh-wakatime/1.0.0`), which is why "working in DSH" shows up as its own editor |
 
-### Version gate and peer dep ranges
-
-The gate is the host's `evaluatePluginCompatibility` in `@deepseek-ai/dsh-app-boot/lib/index.js` (line 311): it reads the plugin's `package.json` only, without loading plugin code.
-
-The line numbers below refer to the published `@deepseek-ai/dsh@0.2.1-rc.2` artifacts and are locators only; verify against the symbol names (`evaluatePluginCompatibility` / `validateVolatilePlacement` / the slot-contract entry `plugins.bundle.config`).
-
-| Condition | Host behavior | Code location |
-|---|---|---|
-| `engines.dsh` present | **Only that one range is compared**, `peerDependencies` are ignored | `dsh-app-boot/lib/index.js:281-284` |
-| `engines.dsh` absent | Every peer prefixed `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*` must be satisfied by the running version; peers outside that prefix (`@deepseek-ai/cordis`, `@deepseek-ai/schemastery`) do not participate | `dsh-app-boot/lib/index.js:286-296` |
-| Range comparison | `semver.satisfies(runningVersion, range, { includePrerelease: true })`, so prereleases participate | `dsh-app-boot/lib/index.js:277` |
-| Requirement unmet | stderr prints `dsh: disabling profile plugin row "<row>": Plugin <name>@<version> is incompatible with dsh <ver>: requirements …` and the row is disabled; the message names `dsh plugin allow-version` for an exact-version exemption | `dsh-app-boot/lib/index.js:2308` and `:335` |
-
-> **Hard lesson for plugin authors: write peerDependencies as ranges, never as exact versions.** The host's own 0.2.1 packages pin every `@deepseek-ai/dsh-*` peer to one exact version (e.g. all dsh peers of `@deepseek-ai/dsh-agent@0.2.1-rc.2` are `0.2.1-rc.2`), and a plugin that copies that style gets disabled generation by generation. The evidence is the `dsh: disabling profile plugin row "webhook-runtime"` and `dsh: disabling profile plugin row "webhook-github"` records in this machine's host log: `@deepseek-ai/dsh-webhook@0.2.0-rc.2` pins its peers to `"0.2.0-rc.2"`, so on dsh `0.2.1-rc.2` each row is disabled, with the log reading `Plugin @deepseek-ai/dsh-webhook@0.2.0-rc.2 is incompatible with dsh 0.2.1-rc.2: requirements {"@deepseek-ai/dsh-agent":"0.2.0-rc.2", "@deepseek-ai/dsh-invariants":"0.2.0-rc.2", …}`; this plugin passes because it declares `^0.2.0-rc.2`, which covers `0.2.1-rc.2` under `includePrerelease` while an exact match does not.
-
-Peer ranges are written as an **explicit range list** (`>=0.1.2-rc.1 <0.1.3-0 \|\| >=0.1.5-rc.3 <0.1.6-0 \|\| >=0.1.7-rc.1 <0.1.8-0 \|\| >=0.2.0-rc.2 <0.2.1-0 \|\| >=0.2.1-rc.2 <0.2.2-0 \|\| >=0.2.2-alpha.2 <0.2.3-0`) rather than `^` prefixes, because under node-semver's default mode (no `includePrerelease`) a prerelease range only matches when the comparator carries an anchor for the same `[major.minor.patch]` tuple. `^0.2.1-rc.2` expands to `>=0.2.1-rc.2 <0.3.0-0`, whose anchors are `0.2.1` and `0.3.0` only — so `satisfies('0.2.2-rc.1', '^0.2.1-rc.2')` is **false**. After the host moved to 0.2.2-rc.1 the old form would have marked this plugin incompatible (this repo hit exactly that on 11-13, found only during release checks). Spelling out `>=0.2.2-alpha.2 <0.2.3-0` is what makes any 0.2.2 prerelease match.
-
-Upstream's `0.2.1-rc.2` release has been added to the list per this rule. It is a **standing action**: one added entry covers that generation's rc plus that generation's stable release, the next rc generation needs another entry, and no single range can cover future prerelease generations in advance.
-
-The exposure is npm only. Installing from a tarball produced by `npm pack` (a `file:` reference to a directory is installed as a link and skips `peerDependencies`, so it measures nothing): against host `0.2.1-rc.2`, `npm install` fails with `ERESOLVE` (exit 1) while the list lacks the entry and exits 0 once `^0.2.1-rc.2` is added; `pnpm install` exits 0 either way and `pnpm peers check` reports `No peer dependency issues found`, because pnpm intersects ranges instead of using default satisfies.
-
-Self-check (read-only evaluation, writes nothing; requires dsh installed, i.e. `command -v dsh` returns a path):
+## Install
 
 ```bash
-node -e 'const p=require("path"),{createRequire}=require("module");const s=createRequire(p.dirname(require.resolve("@deepseek-ai/dsh-app-boot",{paths:[process.argv[1]]})))("semver");const v="0.2.1-rc.2",r="^0.2.0-rc.2";console.log("gate includePrerelease:",s.satisfies(v,r,{includePrerelease:true}),"/ default semantics:",s.satisfies(v,r))' "$(command -v dsh)"
+dsh plugin --profile web add dsh-wakatime-plugin
 ```
 
-The output `gate includePrerelease: true / default semantics: false` shows one version against one range evaluating true under the gate's comparison (with `includePrerelease`) and false under node-semver defaults.
+**Restart `dsh web`** afterwards. Then open **Settings → WakaTime** and paste your API key.
 
-### Kernel generation verification (checked 2026-10-20)
+<details>
+<summary>Other install methods</summary>
 
-| DSH kernel | What was verified | Result | Measured on |
-|---|---|---|---|
-| `0.1.1-rc.2` | host entry link, real boot (headless) past the plugin stage, real boot (web) client bundle HTTP 200 | ✅ | 2026-09-07 |
-| `0.1.2-rc.1` | host entry link, real boot (headless) past the plugin stage, real boot (web) client bundle HTTP 200 | ✅ | 2026-09-07 |
-| `0.2.1-rc.2` | `npx tsc --noEmit` clean; `npx vitest run` passing every test (unit + integration); host compatibility gate (`evaluatePluginCompatibility`) PASS | ✅ | 2026-10-20 |
-
-The two 0.1.x rows are historical measurements: the current `engines.dsh` range no longer covers `0.1.1-rc.2` or `0.1.2-rc.1` (both evaluate to false with the semver the host ships), so those two versions are now rejected by the gate and this plugin no longer claims support for them. The `0.2.1-rc.2` row records build, tests, and the gate only; real boot (headless / web) has not been verified on 0.2.x. The `^0.1.1-rc.2` and `^0.1.2-rc.1` entries stay in the `peerDependencies` list, but they are not a support claim: once `engines.dsh` is declared, peers do not participate in the gate at all, and those two entries only keep install-time resolution satisfied.
-
-The settings namespace is written as `'wakatime' as SettingsNamespace` (type-only import) instead of calling the `settingsNamespace()` helper - removed in `0.1.2`, where importing it at runtime makes the whole module fail to link. Format validation happens inside `ctx.settings.register()` on both generations. `lib/client.js` was measured to have zero kernel imports, so it is generation-independent.
-
-## Installation
-
-### Local Development Install
-
-```bash
-# From the plugin directory
-dsh plugin --profile web add /path/to/dsh-wakatime-plugin
-```
-
-### Git Install
-
-### Internal distribution
-
-This plugin is distributed on an internal Gitea as a private repository. **The internal host is
-deliberately not written into public docs** — to install from inside the network, ask the
-maintainer for the repository URL, then:
-
-```bash
-# Install a pinned commit (recommended: avoids following unverified changes)
-dsh plugin --profile web add <internal-repo-url>#<commit-sha>
-```
-
-Or from GitHub (or any other git host):
+From GitHub:
 
 ```bash
 dsh plugin --profile web add github:dsh-plugin-collection/dsh-wakatime-plugin
 ```
 
-### Build from Source
-
-If installing from git, you need to build first:
+Local development (from the plugin directory):
 
 ```bash
-cd dsh-wakatime-plugin
-pnpm install
-pnpm build
+dsh plugin --profile web add /path/to/dsh-wakatime-plugin
 ```
 
-Or add a `prepare` script to auto-build on install:
+From source:
 
-```json
-{
-  "scripts": {
-    "prepare": "tsc"
-  }
-}
+```bash
+cd dsh-wakatime-plugin && pnpm install && pnpm build
 ```
+
+Internal distribution: also mirrored on a private Gitea for internal use — ask the maintainer for the URL and pin a commit:
+
+```bash
+dsh plugin --profile web add <internal-repo-url>#<commit-sha>
+```
+</details>
 
 ## Configuration
 
-### WebUI Settings Panel (Recommended)
+Everything lives in **Settings → WakaTime** and takes effect on save — no restart.
 
-After installing and restarting DSH:
+| Setting | Description |
+|---|---|
+| **API Key** | WakaTime API key (masked input). When empty it falls back to `WAKATIME_API_KEY`, then `~/.wakatime.cfg`, then `cordis.patch.yml` |
+| **API URL** | Service endpoint, default `https://wakatime.com`; set your own for self-hosted |
+| **Proxy URL** | `http://host:port`. Empty falls back to `HTTPS_PROXY`, then `proxy` in `~/.wakatime.cfg`; `none` forces a direct connection |
+| **No-proxy hosts** | Comma separated, empty inherits `NO_PROXY`. e.g. `wakatime.com` connects that host directly |
+| **Heartbeat interval** | 60000–300000 ms |
+| **Project name / Language** | Empty = auto-detect; a value overrides it |
+| **Terminal app name** | The entity for command heartbeats, default `Terminal`; set it to e.g. `DSH` |
+| **Track switches ×3** | Tool calls / user messages / AI messages |
+| **Cache** | Enable local cache + limit (10–1000 entries) |
+| **Debug mode** | More verbose logging |
 
-1. Open the WebUI
-2. Go to **Settings** → **WakaTime**
-3. Configure:
-   - **API Key**: Your WakaTime API key (shown as password field)
-   - **API URL**: Base URL (for self-hosted WakaTime)
-   - **Proxy URL**: `http://host:port`; empty falls back to `HTTPS_PROXY`, then `proxy` in `~/.wakatime.cfg`; `none` forces a direct connection
-   - **No-proxy hosts**: comma separated, empty inherits `NO_PROXY`; e.g. `wakatime.com` connects that host directly
-   - **Heartbeat Interval**: How often to send heartbeats (60000-300000ms)
-   - **Project Name**: Override auto-detected project name
-   - **Language**: Override auto-detected language
-   - **Terminal App Name**: entity for command heartbeats (an app name); blank falls back to `Terminal`
-   - **Track Tool Calls**: Enable/disable tool call tracking
-   - **Track User Messages**: Enable/disable user message tracking
-   - **Track AI Messages**: Enable/disable AI message tracking
-   - **Cache Heartbeats**: Enable/disable local caching
-   - **Cache Limit**: Maximum cached heartbeats (10-1000)
-   - **Debug Mode**: Enable debug logging
+**API key precedence**: settings page → `WAKATIME_API_KEY` → `cordis.patch.yml` → `~/.wakatime.cfg`. Every layer only accepts a non-empty string; a malformed value is skipped with a warning and resolution continues.
 
-All settings take effect immediately (no restart needed).
+## Verify
 
-### Alternative Configuration Methods
+Four steps to confirm it works:
 
-If you prefer config files:
+1. **Check the log** — after restart you should see `loaded with API key waka_****xxxx`;
+2. **Make DSH do something** — read a file, run a command;
+3. **Wait one heartbeat cycle** (120 s by default) until a flush succeeds;
+4. **Open the WakaTime dashboard** — today's time, projects and languages should show the activity.
 
-**Environment variable:**
+If step 3 stays quiet, check the local cache first:
+
 ```bash
-export WAKATIME_API_KEY=sk-xxxxxxxxxxxx
+wc -l ~/.dsh/wakatime/heartbeat-cache.jsonl
 ```
 
-**cordis.patch.yml:**
-```yaml
-- insert:
-  - id: dsh-wakatime
-    name: 'dsh-wakatime'
-    config:
-      api_key: sk-xxxxxxxxxxxx
-      debug: true
-```
+- `0` lines or no file = healthy (the cache is only written on failure);
+- **growing** = sends are failing — look for `上报失败…` in the log.
 
-**~/.wakatime.cfg (WakaTime standard config):**
-```ini
-[settings]
-api_key = sk-xxxxxxxxxxxx
-```
+## Compatibility
 
-### Configuration Priority
+| Side | Notes |
+|---|---|
+| **DSH** | Supported range is `engines.dsh` in `package.json`; currently covers generations `0.1.2` – `0.2.3` (prereleases included). The host validates it at startup and disables the plugin on a mismatch |
+| **Node** | >= 22.19 (including 24+) |
+| **Platform** | Windows / macOS / Linux |
+| **WakaTime** | wakatime.com, or any WakaTime-compatible self-hosted server |
+| **Other telemetry plugins** | One heartbeat backend per profile — do not run codetime or similar alongside |
 
-1. WebUI settings (highest priority)
-2. Environment variable `WAKATIME_API_KEY`
-3. `cordis.patch.yml` config
-4. `~/.wakatime.cfg` api_key
-5. Plugin schema defaults (lowest priority)
+## Category mapping
 
-## Category Mapping
-
-| DSH Tool | WakaTime Category | is_write |
+| DSH tool | WakaTime category | is_write |
 |---|---|---|
-| `write` | `coding` | true |
-| `edit` | `coding` | true |
-| `read` | `browsing` | false |
-| `bash` / `pwsh` | decided by the command itself — see “Shell category mapping” below | false |
-| `grep` / `glob` | `browsing` | false |
-| `web_search` | `researching` | false |
-| `mcp__codegraph__codegraph_explore` | `code reviewing` | false |
-| `mcp__langfuse__*` | `debugging` | false |
-| `subagent` / `subagent_fork` | `coding` | false |
-| `workflow` | `coding` | false |
-| `todo_write` | `coding` | false |
-| `ask_user_question` | `communicating` | false |
-| user message event | `communicating` | false |
-| assistant message event | `ai coding` | false |
-| `skill` | `learning` | false |
-| other | `coding` | false |
+| `write` / `edit` | `coding` | ✅ |
+| `read` / `grep` / `glob` | `browsing` | — |
+| `bash` / `pwsh` | **Derived from the command** (below) | — |
+| `web_search` | `researching` | — |
+| `mcp__codegraph__codegraph_explore` | `code reviewing` | — |
+| `mcp__langfuse__*` | `debugging` | — |
+| `subagent` / `subagent_fork` / `workflow` / `todo_write` | `coding` | — |
+| `ask_user_question` / user messages | `communicating` | — |
+| AI replies | `ai coding` | — |
+| `skill` | `learning` | — |
+| Anything else | `coding` | — |
 
-## Architecture
+**Shell categories** are no longer a blanket `building` — an earlier implementation did that, and replaying 5290 shell heartbeats from a real account showed 98.7% of the reported "build time" was not building. Categories now come from the command:
+
+| Command | Category |
+|---|---|
+| `ls` / `cat` / `grep` / `sed` / `head` … | `browsing` |
+| `git` / `pnpm build` / `docker build` … | `coding` / `building` |
+| `pnpm test` / `vitest` | `running tests` |
+| Unrecognised | `coding` |
+
+Only the **bare subcommand** is examined, never trailing arguments (`test` inside `grep -n foo test/a.py` does not count as a test run), and wrappers like `cd … &&`, `sudo` and `npx` are stripped first.
+
+## Known limitations
+
+- **File-level granularity** — DSH tool calls carry no cursor position, so line-level detail is coarser than an IDE plugin provides;
+- **AI token accounting differs from IDE plugins**: the host reports uncached and cache-hit input as disjoint components, and the plugin sends them as separate fields, so the numbers are not directly comparable;
+- **No historical backfill** — changing `entity` / `category` shape breaks cross-version comparisons on those dimensions;
+- **Read endpoints are closed** to plugin keys (see [Development](#development)), so the plugin cannot read its own data back for validation.
+
+## Development
+
+<details>
+<summary>Build, test and layout</summary>
+
+```bash
+pnpm install
+pnpm build        # clears lib/ then rebuilds host + client
+pnpm typecheck
+pnpm test         # vitest, 169 cases
+```
 
 ```
 src/
-├── index.ts      # Plugin entry: registers event listeners and timers
-├── wakatime.ts   # HTTP client for WakaTime API
-├── tracker.ts    # File-level activity tracker
-├── project.ts    # Project/branch inference from git
-├── language.ts   # Language inference from file extension
-├── diff.ts       # Line diff calculation for write/edit
-├── cache.ts      # Local heartbeat cache (JSONL file)
-├── settings.ts   # Config schema and WebUI settings panel registration
-└── types.ts      # Type definitions and constants
+├── index.ts         # entry: event listeners, timers, config migration
+├── config-value.ts  # volatile-ref unwrapping and per-field validation
+├── wakatime.ts      # HTTP client: proxy, bulk upload, per-item parsing
+├── tracker.ts       # event → heartbeat conversion and merging
+├── cache.ts         # local JSONL cache with time-based trimming
+├── project.ts       # git / package.json project inference
+├── category.ts      # shell command → category
+├── language.ts      # extension → language
+├── diff.ts          # write/edit line counts
+└── types.ts         # types and constants
 ```
+</details>
 
-## Development and packaging
+<details>
+<summary>Bulk contract: outer 2xx + per-item statuses</summary>
 
-### Four version-sensitive wiring points (still true on 0.2.2)
+The `heartbeats.bulk` response is **always 202 at the outer level**; real results live in per-item status codes inside `responses`. An implementation that only checks `response.ok` reads a fully rejected batch as a full success — rejected heartbeats neither enter the cache nor raise an error, which is plain data loss.
 
-| Wiring point | Rule | Source |
-|---|---|---|
-| Key of the `plugins.bundle.config` WebUI slot | The **plugin package name** (`name` in `package.json`), not the settings namespace and not the profile entry id; a mismatched key leaves the bundle page without its config card | Host `dsh-client-ui-plugin-manager/lib/types/client/slot-contract.d.ts:149` ("keyed by the bundle's package name"); the render site `lib/client.js:2964` passes `{ entryKey: pkg.name }` |
-| How `@deepseek-ai/dsh-client-ui-primitives` is referenced | Must stay **external**, never bundled into `lib/client.js`: the host web module table keeps that id resident and official client packages do `require("@deepseek-ai/dsh-client-ui-primitives")`; bundling it copies the whole icon set | Host `dsh-web-frontend/dist/assets/index-*.js` module table contains the id; `dsh-client-ui-plugin-manager/lib/client.js:10`; this repo `build.mjs:28` |
-| Automatic settings-page projection | Depends on `.volatile()` on the plugin's Config fields; the projection lives in host `dsh-app-boot`, which writes `volatile` into the schema's `x-cordis` | This repo `src/index.ts`; host `dsh-app-boot/lib/index.js` (`validateVolatilePlacement`) and its projection branch |
-| `.volatile()` fields reach the plugin as **ref objects**, not values | Every volatile field handed to `apply()` is `Object.freeze({ get: () => value, [write]: … })`, so it **must be unwrapped before use** — the host's own `dsh-settings` does exactly that (`plainConfig`). Using it as a value fails in several ways at once: `api_url` builds an illegal URL, `heartbeat_interval_ms` is treated as 1 ms by Node, booleans become permanently truthy, string fields drop out of payloads, and `cache_limit` comparisons are always false. This plugin normalizes everything in `src/config-value.ts`, at both the entry and the settings-document layer | Host `cosmokit/lib/index.js` (`createVolatile` / `isVolatile`); `dsh-settings/lib/index.js` (`if (isVolatile(value)) return plainConfig(value.get())`); reproduced identically on 0.2.1 and 0.2.2 |
-
-### Dependencies and host version drift
-
-| Item | Note |
+| Per-item status | Handling |
 |---|---|
-| pnpm is the only package manager | The repo ships `pnpm-lock.yaml` (with `pnpm-workspace.yaml`) and has no `package-lock.json`; install and refresh the lock with pnpm |
-| `typescript` must be an explicit devDependency | `scripts.build` / `prepare` / `watch` all invoke `tsc`. Before 11-10 it was **in neither devDependencies nor the lockfile** (grep hit count 0): builds worked only because the environment happened to carry a foreign tsc, so a clean clone, another machine, or `pnpm install --frozen-lockfile` fails — and `prepare` fails during install itself. It is now declared as `typescript: ^5.9.0` (matching sibling plugins in this workspace), and the build runs the local `node_modules/.bin/tsc` instead of `npx tsc`. That substitution matters: with the dependency missing, npx quietly installs the deprecated same-named package `tsc@2.0.4`, which only prints "This is not the tsc command you are looking for" and leaves `lib/` in its previous state — a broken build environment disguised as a successful build |
-| Development dependencies are exact pins | devDependencies pin `@deepseek-ai/dsh-agent` / `@deepseek-ai/dsh-session` / `@deepseek-ai/dsh-settings` / `@deepseek-ai/dsh-client-ui-primitives` all to `0.2.1-rc.2` (`@deepseek-ai/cordis` `^4.0.5` and `@deepseek-ai/schemastery` `^3.18.5` stay ranges). These are development-time values, not the published contract: the runtime gate reads `engines.dsh` only, and the outward contract is the peer list above. `@deepseek-ai/dsh-client-ui-primitives` is an explicit devDependency for development resolution only and must still stay external in the bundle (see the table above) |
-| Host packages pin their own peers | From 0.2.1 every host package pins its `@deepseek-ai/dsh-*` peers to one exact version (`@deepseek-ai/cordis` stays a `~4.0.5` range). That is internal to the host monorepo; plugins must not copy it, see "write peerDependencies as ranges" above |
-| `@deepseek-ai/dsh-invariants` is discontinued | Last published version is `0.2.0-rc.2` and the 0.2.1-rc.2 host package set has no such package; drop it from devDependencies after an upgrade if it lingers |
-| 0.2.1 removes the memory persistence mode of the settings client | `ConfigFormSnapshot` no longer has `mode: 'host' \| 'memory'`; `SettingsMirrorSnapshot.status` on the describe mirror no longer has `'unavailable'`, leaving `'idle' \| 'loading' \| 'ready'`; `ConfigFormController` takes one less persistence parameter (now `ctx, spec, mirror, schema`). Sources: host `dsh-client-ui-settings/lib/types/client/config-form-types.d.ts:6-29`, `settings-mirror.d.ts:21-31`, `config-form.d.ts:49`. Plugin code must not read `snapshot.mode` |
-| Writes report acceptance (existing contract since 0.2.0, not new in 0.2.1) | `ConfigForm.set` / `unset` / `mutate` return `Promise<boolean>`: `true` means the Host accepted, `false` means refusal or a skipped write; transport failures still reject. Source: `config-form-types.d.ts:49-70` |
+| `2xx` | Stored |
+| `4xx` (except 429) | Permanent failure — dropped with a warning carrying the server's reason |
+| `429` / `5xx` | Back to cache for retry |
 
-## Troubleshooting
+String fields are pre-trimmed to the server's hard limits: `entity` ≤ 2083, `project` / `branch` ≤ 1024; an empty string is rejected too. A trimmed `entity` ends with `...`.
+</details>
 
-### Plugin not loading
+<details>
+<summary>Cache policy</summary>
 
-1. Check that `lib/` directory exists and contains compiled JS files
-2. Run `pnpm run build` if missing
-3. Check DSH logs for errors
+- Written **only on failure**, drained on success;
+- Concurrent flushes are serialised, and only heartbeats that **truly did not land** are written back (an earlier version wrote stored ones back too, causing duplicates);
+- Over the limit, the oldest are trimmed **by time** with a warning `缓存超过上限（N 条），最旧的 M 条心跳已被丢弃（from → to）` — that line means data is genuinely being lost.
+</details>
 
-### Settings not showing in WebUI
+<details>
+<summary>AI token accounting</summary>
 
-1. Make sure the plugin is in the `bundles` list in `package.json`
-2. Restart DSH completely
-3. Check browser console for errors
+The host's `TokenUsage` input components are **disjoint**: `inputTokens` is the uncached part only, cache hits are reported separately in `cacheReadTokens`, and billed input is the sum of the three.
 
-### Heartbeats not sending
+This plugin sends the uncached part as `ai_input_tokens` and cache hits as `ai_cached_input_tokens`, and **never adds them together**; `cacheWriteTokens` has no WakaTime counterpart and is not reported.
 
-1. **Look at the local cache before the logs.** `~/.dsh/wakatime/heartbeat-cache.jsonl`
-   is only written when sending fails and is drained when sending succeeds. If it keeps
-   growing or sits pinned at the Cache Limit, sending is failing continuously — and the
-   oldest heartbeats are being trimmed away, so that activity is already unrecoverable.
-   A cache **far above** the Cache Limit is its own signal: `cache_limit` is not reaching
-   the code as a number (see step 3). On overflow the plugin now trims by **time** (oldest
-   first) and warns; it no longer drops entries silently — what it trims is really gone.
-2. **Read the warnings; debug is not required.** Failures are always warned with a reason,
-   written to **both** the host logger and the console (this host does not forward
-   `ctx.logger` to the captured stdout, so logger-only warnings are effectively no logs —
-   that is exactly why two separate silent outages went unnoticed):
-   `上报失败…` (transport / auth / rate limit), **`缓存超过上限（N 条），最旧的 M 条心跳已被丢弃（from → to）`**
-   (data loss has actually begun, and that window cannot be recovered),
-   `N/M 条心跳被 WakaTime 逐条拒绝并已丢弃…`
-   (invalid payload), `cache flush failed…` (the backfill cannot send either).
-3. **After a host upgrade, look first for "配置字段不是可用值" warnings.** Fields marked
-   `.volatile()` reach the plugin as cosmokit refs — `Object.freeze({ get, [write] })`,
-   i.e. **objects** — and `src/config-value.ts` unwraps and type-checks every one of them,
-   falling back to the schema default and warning with the field name and shape (never the
-   value). Without that layer, a single upgrade breaks many things at once, all measured:
-   `api_url` → illegal URL (the request is never even issued), `heartbeat_interval_ms` →
-   `setInterval(fn, NaN)`, which Node coerces to a 1 ms delay (reproduced in isolation: 915 fires/s; the corresponding Node warning was never seen inside the host, so no CPU figure is attributed to it),
-   `include_*=false` → truthy object (tracking you disabled keeps reporting),
-   `project_name` / `language` → both fields silently dropped from payloads,
-   `cache_limit` → the cache is never trimmed.
-4. **Confirm this key actually works.** The warnings say it: `未配置 WakaTime API Key` =
-   none of the three sources has a usable value; `WakaTime API Key 无效` = the server
-   returned 401; `上报失败…（cause: …）` = a transport problem. Resolution order is config
-   layer → `WAKATIME_API_KEY` → `~/.wakatime.cfg`, and all three only accept a **non-empty
-   string**: a wrong shape is ignored, falls through, and is warned with a shape summary.
-   (The settings page used to offer a "Project name" dropdown backed by
-   `/users/current/projects`; that read endpoint now answers 403 for plugin keys, so the
-   candidates were removed and the field is free text.)
-5. **Check connectivity to WakaTime, and note the proxy precedence.** The outbound proxy is
-   taken from the first source that yields a usable value:
+Measured sample: one session billed 80.1M input of which 78.7M (98%+) was cache hits. Reporting only the uncached part makes WakaTime's Tokens two orders of magnitude smaller than a local dashboard.
+</details>
 
-   | # | Source | Note |
-   |---|---|---|
-   | 1 | Settings page "Proxy URL" | `none` / `direct` forces a direct connection (cut a bad proxy in a hurry) |
-   | 2 | `HTTPS_PROXY` / `https_proxy` / `HTTP_PROXY` / `http_proxy` | the same path all of DSH's own egress uses |
-   | 3 | `proxy` under `[settings]` in `~/.wakatime.cfg` | the source wakatime-cli reads |
-   | — | none of the above | direct |
+<details>
+<summary>Version gate and peer ranges</summary>
 
-   A value that is not a valid `http(s)` URL is **ignored with a warning** and resolution
-   continues to the next source — there is no silent "configured but not applied". With
-   debug mode on, startup logs a line `网络出口 经代理 http://…（来源：设置页）` that answers
-   which route is actually in use. `NO_PROXY` / "No-proxy hosts" accept `*`, exact hosts and
-   `.suffix` entries (`example.com` also matches its subdomains). Why the plugin reads the cfg at all: on this machine
-   curl-direct, curl-via-proxy and node-direct were all 20/20 fine, yet the plugin
-   intermittently failed with `fetch failed (cause: ETIMEDOUT)` — it was the only link on
-   the box not using the proxy the user had configured. Network diagnostics now include
-   the `cause` (ECONNRESET / ETIMEDOUT / ENOTFOUND …) instead of a bare `fetch failed`.
-6. **If behaviour does not match the code, check the build fingerprint.** The log line
-   `apply called; artifact mtime=… pid=…` says exactly which build this process loaded.
-   Hot reload can leave old fibers still sending with pre-fix code — restart DSH fully.
-7. **Payload lengths are hard-validated.** `entity` ≤ 2083, `project` / `branch` ≤ 1024,
-   and empty strings are rejected as well. The plugin clamps before sending; a clamped
-   `entity` ends with `...`. If per-item rejections still appear, some field is outside the
-   clamping coverage — paste the server reason from the warning into an issue.
-8. **A plugin key no longer reads your own data back.** Since 2026-10 WakaTime answers
-   `/users/current`, `/users/current/projects` and `/users/current/heartbeats` with
-   `403 API Keys are only for plugins, use your personal oauth token` while
-   **`heartbeats.bulk` still accepts the plugin key**. This is an upstream policy change,
-   not an auth bug in this plugin. Consequence: the "Project name" candidate dropdown that
-   depended on the read endpoint has been removed (see step 4). And a 403 on a read endpoint
-   must not be mistaken for a dead key — judge the key by the write endpoint or by this
-   plugin's failure warnings.
+The host's `evaluatePluginCompatibility` reads only the plugin's `package.json`:
 
-### Shell category mapping
+| Condition | Behaviour |
+|---|---|
+| `engines.dsh` present | **Only that range is compared**; `peerDependencies` are ignored |
+| Absent | Every `@deepseek-ai/dsh*` peer must be satisfied by the running version |
+| Comparison | `semver.satisfies(running, range, { includePrerelease: true })` |
+| Failure | Logs `Plugin … is incompatible with dsh …` and disables the row |
 
-The category of a `bash` / `pwsh` call is now derived from the command itself
-(`src/category.ts`) instead of being hardcoded to `building`. Replaying the 5290 shell
-heartbeats already stored on the account gives this before/after:
+**Write peers as an explicit range list, not `^` prefixes, and never exact versions.** Under node-semver's default semantics (no `includePrerelease`) a prerelease range only matches when a comparator carries an anchor for the same `[major.minor.patch]` tuple: `^0.2.1-rc.2` expands to `>=0.2.1-rc.2 <0.3.0-0`, whose anchors are `0.2.1` and `0.3.0` only — so `satisfies('0.2.2-rc.1', '^0.2.1-rc.2')` is **false** and the plugin gets disabled once the host moves to 0.2.2-rc.1. Spelling out `>=0.2.2-alpha.2 <0.2.3-0` is what covers it.
 
-| category | before | after |
+Host 0.2.1 packages pin their dsh peers exactly to one version; copying that makes a plugin disappear on the next rc — on this machine `webhook-runtime` and `webhook-github` vanished that way.
+
+**Adding a peer entry is ongoing**: one entry only covers that generation's rc plus its stable release; the next generation needs another.
+</details>
+
+<details>
+<summary>Four version-sensitive wiring points (still true on 0.2.2)</summary>
+
+| Wiring point | Rule |
+|---|---|
+| WebUI slot `plugins.bundle.config` key | Is the **package name** — not the settings namespace and not the profile entry id; a mismatch means no settings card |
+| `@deepseek-ai/dsh-client-ui-primitives` | Must stay **external**; bundling it duplicates the whole icon set |
+| Automatic settings projection | Requires `.volatile()` on Config; projection lives in the host's `dsh-app-boot` |
+| `.volatile()` fields arrive as **ref objects** | `apply()` receives `Object.freeze({ get })`, not values. They **must be unwrapped**, otherwise `api_url` produces an invalid URL, `heartbeat_interval_ms` becomes 1 ms, booleans stay truthy, string fields are dropped entirely and `cache_limit` never trims. Handled centrally in `src/config-value.ts` |
+</details>
+
+<details>
+<summary>Shell category measurement</summary>
+
+Replaying 5290 shell heartbeats from a real account:
+
+| Category | Before | After |
 |---|---|---|
 | `building` | 100.0% | 1.3% |
 | `coding` | — | 50.6% |
@@ -350,48 +259,67 @@ heartbeats already stored on the account gives this before/after:
 | `running tests` | — | 0.5% |
 | `debugging` | — | 0.3% |
 
-i.e. 98.7% of what the dashboard reported as "building" was not building.
+Categories use only WakaTime's authoritative set (`wakatime-cli`, `pkg/heartbeat/category.go`): there is no `deployment` and no `testing` (the right value is `running tests`), and invented words do not aggregate in the dashboard.
+</details>
 
-Rules and hard constraints:
+<details>
+<summary>The command heartbeat entity</summary>
 
-- **Only the bare subcommand is inspected, never the trailing arguments.** The counter-example
-  that motivated this: `grep -n foo test/a_test.py` — a path containing `test` used to be
-  classified as running tests, inventing 411 fake test records in the account. File-inspection
-  tools (`ls` / `cat` / `grep` / `sed` / `head` …) are unconditionally `browsing`.
-- **Wrapper layers are peeled first**: a leading `cd <dir> &&`, `export`, `sudo` / `time` /
-  `timeout`, and the one-shot `npx` / `bunx` prefix (including `--yes`, `--package <pkg>`,
-  `vitest@2`). Without peeling, the most common DSH shape
-  `cd repo && pnpm test | tail` always resolves to `cd`.
-- **Only categories from the authoritative WakaTime set are emitted** (see
-  `wakatime-cli` `pkg/heartbeat/category.go`): the list has no `deployment` and no `testing`
-  (the correct value is `running tests`); an invented word cannot be aggregated by the
-  dashboard. Platform tools like `docker` / `kubectl` are therefore split by subcommand into
-  `browsing` (reading state) and `building` (making changes).
-- Anything unrecognised falls back to `coding`.
+`bash` / `pwsh` heartbeats have `type: app`. Per wakatime-cli's definition (*"AppType represents an app entity"*) the entity should be an **app name**, not a command line. Treating the whole command as the entity scattered 5281 shell heartbeats into **5158 distinct entities, 98.2% of them seen exactly once** — no aggregation value, and one keystroke away from the 2083-character limit and per-item 400s.
 
-### Entity for command heartbeats
+It now comes from the "Terminal app name" setting (default `Terminal`); what the command does is expressed by `category`. The merge key inside the 5-second window is `entity + category`, otherwise an `ls` would overwrite a `pnpm test` from four seconds earlier under the same app name.
 
-A `bash` / `pwsh` heartbeat has `type: "app"`, and per wakatime-cli's own definition
-(*"AppType represents an app entity"*) the entity of an app heartbeat should be **an
-application name**, not a command line. Using the raw command made the 5281 shell
-heartbeats on the account fan out into **5158 distinct entities, 98.2% of which appear
-exactly once** — no aggregatable dimension, and a constant risk of tripping the 2083
-character entity limit, which rejects such heartbeats per item.
+User message / AI reply heartbeats **deliberately keep** `dsh-session-<id>` as the entity: its cardinality is bounded by the session count and it is the only dimension that drills down by session.
+</details>
 
-The entity now comes from the "Terminal App Name" setting (default `Terminal`; e.g. set
-it to `DSH`). Leaving it blank falls back to the default — an empty entity is rejected by
-the server, so there is no path that sends one. What the command was doing is expressed by
-`category`. Repeated calls inside the 5 second window are still merged, but the merge key is
-`entity + category`: with a shared app name, a bare `entity` key would let a later `ls`
-overwrite an earlier `pnpm test`.
+<details>
+<summary>Proxy precedence</summary>
 
-User / assistant heartbeats **deliberately keep** `dsh-session-<id>` as their entity: its
-cardinality is bounded by the number of sessions and it is the only dimension that drills
-down per session (AI attribution additionally carries `ai_session`).
+The outbound proxy is taken from **settings page → env vars → `~/.wakatime.cfg` → direct**, first match wins. A layer that is not a valid `http(s)` URL is **ignored with a warning** and resolution continues.
 
-Remaining boundary: `language` for shell heartbeats is still `Shell`, and the entity shape
-change cannot be retrofitted — cross-version comparisons on the entity axis will not line up.
+With debug on, startup logs a line `网络出口 经代理 http://…（来源：设置页）` that answers which route is actually in use. Credentials in a proxy URL are masked to `***:***` before logging.
+
+`NO_PROXY` / "No-proxy hosts" accept `*`, exact hosts and `.suffix` entries (`example.com` also matches its subdomains).
+
+Why the plugin must read the cfg: measured on the same machine, curl direct, curl via proxy and node direct were all 20/20 while the plugin intermittently got `fetch failed` — because it was the only link not going through the proxy that was already configured in `~/.wakatime.cfg`.
+</details>
+
+<details>
+<summary>Read endpoints return 403</summary>
+
+Since 2026-10 WakaTime answers read endpoints (`/users/current`, `/users/current/projects`, `/users/current/heartbeats`) with:
+
+```
+403 API Keys are only for plugins, use your personal oauth token
+```
+
+while the **write endpoint `heartbeats.bulk` still accepts plugin keys**. This is an upstream policy change, not an auth bug in this plugin.
+
+One consequence: the "Project name" dropdown in settings depended on `/users/current/projects`, so it was permanently empty and has been removed — the field is free text now. Also, do not read that 403 as a dead key: judge the key by the write endpoint or by the failure warnings.
+</details>
+
+<details>
+<summary>Troubleshooting</summary>
+
+**Plugin not loaded**: does `lib/` exist? Run `pnpm build`. Any incompatibility line in the log?
+
+**No settings card**: confirm the plugin is in the profile's bundles; fully restart `dsh web`; check the browser console.
+
+**Heartbeats not sending**, in this order (an earlier version went silent for a full week):
+
+1. **Cache before logs** — `~/.dsh/wakatime/heartbeat-cache.jsonl` is only written on failure. Persistent growth or pinning at the limit means sends are failing and older heartbeats are being pushed out; that activity is unrecoverable.
+2. **Read the warnings; debug is not required** — failures always warn with a reason and are written to **both the logger and console** (this host's `ctx.logger` never reaches the stdout capture file, so logger-only means no log at all — the direct reason two silent outages went unnoticed). Key lines: `上报失败…`, `缓存超过上限…已被丢弃`, `N/M 条心跳被逐条拒绝并已丢弃…`, `cache flush failed…`.
+3. **After a host upgrade, look for the "config field is not a usable value" warning** — a volatile ref used as a value fails silently in several ways (see the wiring points above).
+4. **Confirm the key** — `未配置 WakaTime API Key` = no usable value in any layer; `WakaTime API Key 无效` = the server returned 401; `上报失败…（cause: …）` = transport. Diagnostics carry `cause` (`ECONNRESET` / `ETIMEDOUT` / `ENOTFOUND`…), not just `fetch failed`.
+5. **Suspect you are not running your code? Check the build fingerprint** — `apply called; artifact mtime=… pid=…` answers which build this process loaded. Hot reload can leave an old fiber sending with old code; restart DSH fully when behaviour disagrees with the source.
+6. **Payload length is hard-validated** — if "per-item rejection" warnings persist, some field is outside the trimming coverage; paste the server's reason from the warning into an issue.
+</details>
+
+## References
+
+- [WakaTime API docs](https://wakatime.com/developers)
+- [wakatime-cli](https://github.com/wakatime/wakatime-cli) — authoritative source for categories and field semantics
 
 ## License
 
-MIT
+MIT © wujue

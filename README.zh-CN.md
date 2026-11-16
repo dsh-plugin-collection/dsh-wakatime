@@ -1,342 +1,256 @@
 <p align="center">
-  <img src="assets/logo.svg" width="128" alt="dsh-wakatime logo"/>
+  <img src="assets/logo.svg" width="128" alt="dsh-wakatime-plugin logo"/>
 </p>
 
-# dsh-wakatime
+# dsh-wakatime-plugin
 
-[English](./README.md) | 简体中文
+[English](./README.md) | **简体中文**
 
-DeepSeek Harness（DSH）的 WakaTime 心跳上报插件。
+**把在 DSH 里花的时间，记进你的 WakaTime 面板。**
 
-追踪你的 AI 辅助编码活动，并同步到你的 [WakaTime](https://wakatime.com) 面板。
+> DeepSeek Harness 的 WakaTime 心跳插件：追踪 AI 辅助编码活动——每个工具调用、每次命令、每轮对话——按**项目 / 语言 / 类别**归集，并上报 AI token 用量。
 
-> **说明**：本项目为社区集成，与 WakaTime 官方无隶属关系。
+> 本项目为社区集成，与 WakaTime 官方无隶属关系。
 
-## 功能特性
+## 这是什么
 
-- **文件级追踪** —— 每次工具调用（write、edit、read、bash、grep、glob 等）都会生成一条精确的 WakaTime 心跳
-- **智能项目识别** —— 自动从 git、package.json 或目录名推断项目名
-- **分支追踪** —— 上报当前工作的 git 分支
-- **语言推断** —— 根据文件扩展名识别编程语言
-- **行数统计** —— write/edit 操作上报新增/删除行数
-- **AI token 上报** —— assistant 回复的心跳携带 `ai_input_tokens` / `ai_cached_input_tokens` / `ai_output_tokens` / `ai_prompt_length` / `ai_session`（WakaTime GenAI 指标）；需开启 **Track AI Messages** 才生效
+DSH 里的活动原本不会出现在 WakaTime 上：WakaTime 靠编辑器插件上报，而你在 DSH 里的工作发生在终端和 AI 对话里。本插件补上这一段——它监听 DSH 的事件，转成 WakaTime 心跳发出去。
 
-  口径说明（容易和本地面板对不上，先说清）：宿主的 `TokenUsage` 三个输入分量**互斥**——
-  `inputTokens` 只是未命中部分，缓存命中记在 `cacheReadTokens`，计费输入 = 三者之和。
-  本插件把未命中报进 `ai_input_tokens`、把缓存命中报进 `ai_cached_input_tokens`，
-  **不把两者相加**；`cacheWriteTokens` 在 WakaTime 侧没有对应字段，故不上报。
-  一个实测样本：某会话计费输入 80.1M，其中缓存命中 78.7M（98%+）——只报未命中的实现
-  会让 WakaTime 的 Tokens 比本地 context 面板小两个数量级。
-- **心跳合并** —— 5 秒内对同一文件的连续操作自动合并
-- **批量发送** —— 单次 HTTP 请求最多携带 25 条心跳（WakaTime 上限）
-- **请求超时** —— 所有 HTTP 请求（10 秒）与 git 探测（5 秒）都有硬超时，挂起的端点永远不会阻塞冲刷
-- **推断缓存** —— 项目名 / 分支 / 依赖按工作目录解析一次后缓存 60 秒，避免每次工具调用都拉起 git 进程
-- **逐条可观测的批量上报** —— `heartbeats.bulk` 的契约是「外层恒 2xx + 逐条状态码」；插件逐条判定：4xx 校验失败视为永久失败（丢弃并告警，带服务端原因），429/5xx 回缓存重试。字符串字段按服务端硬上限预先裁剪（`entity` ≤ 2083，`project` / `branch` ≤ 1024；空串同样被服务端拒绝，这类字段整个不发）
-- **安全的缓存冲刷** —— 并发冲刷串行化；只把【确实没落库】的心跳写回，已入库的一条都不重发，永久无效的不再占缓存名额
-- **实时生效的设置** —— 所有 WebUI 设置即时生效：开关逐事件检查，心跳间隔变更原地重建定时器
-- **本地缓存** —— 发送失败的心跳写入本地缓存，下次成功发送时自动重试；失败与丢弃一律告警并带原因，不再只在 debug 模式下打印
-- **WebUI 配置** —— 全部设置可在 WebUI 设置面板中完成（无需手动编辑配置文件）
+- 一条 `write` / `edit` → 一条带行数与语言的心跳
+- 一条 `bash` 命令 → 一条按命令内容判定类别的 `app` 心跳
+- 一轮 AI 回复 → 一条带 token 用量的 `ai coding` 心跳
 
-## 兼容性
+不做的事：不改 DSH 核心、不打包宿主组件、不做本地存储以外的分析。
 
-本插件是两个系统之间的桥梁：运行在 **DSH 内部**，对接 **WakaTime API**。
+## 效果预览
 
-| 端 | 兼容性 |
+装好之后的 WakaTime 面板：
+
+<p align="center">
+  <img src="docs/media/screenshot-dashboard.png" width="900" alt="WakaTime 面板：项目、分类、语言、编辑器四个维度都有来自 DSH 的统计"/>
+</p>
+
+四个维度都由本插件喂数据：
+
+| 面板区域 | 数据来源 |
 |---|---|
-| **DSH（DeepSeek Harness）** | 以 DSH 插件形式运行于 web profile；支持区间由 `package.json` 的 `engines.dsh` 决定，写作 `>=0.1.2-rc.1 <0.1.3-0 \|\| >=0.1.5-rc.3 <0.1.6-0 \|\| >=0.1.7-rc.1 <0.1.8-0 \|\| >=0.2.0-rc.2 <0.2.1-0 \|\| >=0.2.1-rc.2 <0.2.2-0 \|\| >=0.2.2-alpha.2 <0.2.3-0`（闸门规则见下）；peer 依赖写同一套区间：`@deepseek-ai/dsh-agent` / `@deepseek-ai/dsh-session` / `@deepseek-ai/dsh-client-ui-primitives` `>=0.1.2-rc.1 <0.1.3-0 \|\| >=0.1.5-rc.3 <0.1.6-0 \|\| >=0.1.7-rc.1 <0.1.8-0 \|\| >=0.2.0-rc.2 <0.2.1-0 \|\| >=0.2.1-rc.2 <0.2.2-0 \|\| >=0.2.2-alpha.2 <0.2.3-0`，`@deepseek-ai/cordis` `^4.0.1`，`@deepseek-ai/schemastery` `^3.18.1`；Node ≥ 22.19（含 24+）；Windows / macOS / Linux 全支持 |
-| **WakaTime 云端** | 开箱即用对接 wakatime.com（心跳 API v1） |
-| **自托管 WakaTime** | 通过 **API URL** 设置支持任意 WakaTime 兼容服务端 |
-| **WakaTime 生态** | 自动读取标准 `~/.wakatime.cfg`，已有 API Key 无需重复配置 |
-| **其他遥测插件** | 每个 DSH profile 只保留一个心跳后端，请勿与同类插件（如 codetime）同时启用 |
-
-### 版本闸门与 peers 写法
-
-闸门实现是宿主 `@deepseek-ai/dsh-app-boot/lib/index.js` 的 `evaluatePluginCompatibility`（第 311 行）：只读插件 `package.json`，不加载插件代码。
-
-以下行号对应 `@deepseek-ai/dsh@0.2.1-rc.2` 的发布产物，仅作定位示意；核对以符号名为准（`evaluatePluginCompatibility` / `validateVolatilePlacement` / slot-contract 的 `plugins.bundle.config`）。
-
-| 条件 | 宿主行为 | 代码位置 |
-|---|---|---|
-| 有 `engines.dsh` | **只比较这一个区间**，`peerDependencies` 被忽略 | `dsh-app-boot/lib/index.js:281-284` |
-| 没有 `engines.dsh` | 每个 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*` 前缀的 peer 都要被运行版本满足；`@deepseek-ai/cordis`、`@deepseek-ai/schemastery` 等非该前缀的 peer 不参与判定 | `dsh-app-boot/lib/index.js:286-296` |
-| 区间比较方式 | `semver.satisfies(运行版本, 区间, { includePrerelease: true })`，预发布版参与比较 | `dsh-app-boot/lib/index.js:277` |
-| 判定不通过 | stderr 打印 `dsh: disabling profile plugin row "<条目>": Plugin <name>@<version> is incompatible with dsh <ver>: requirements …`，该条目被禁用；提示可用 `dsh plugin allow-version` 逐版本豁免 | `dsh-app-boot/lib/index.js:2308` 与 `:335` |
-
-> **给插件作者的硬教训：peerDependencies 要写区间，不要写精确版本。** 宿主 0.2.1 一方包对 `@deepseek-ai/dsh-*` 的 peers 全部精确 pin 到同一版本（例：`@deepseek-ai/dsh-agent@0.2.1-rc.2` 的 dsh peers 全是 `0.2.1-rc.2`），插件照抄这种写法会在下一个 rc 上被闸门整片禁用。实证是本机 host 日志中的 `dsh: disabling profile plugin row "webhook-runtime"` 与 `dsh: disabling profile plugin row "webhook-github"` 记录：`@deepseek-ai/dsh-webhook@0.2.0-rc.2` 因 peers 写死 `"0.2.0-rc.2"`，在 dsh `0.2.1-rc.2` 下被逐行禁用，日志原文摘取 `Plugin @deepseek-ai/dsh-webhook@0.2.0-rc.2 is incompatible with dsh 0.2.1-rc.2: requirements {"@deepseek-ai/dsh-agent":"0.2.0-rc.2", "@deepseek-ai/dsh-invariants":"0.2.0-rc.2", …}`；本插件因写 `^0.2.0-rc.2`（在 `includePrerelease` 下覆盖 `0.2.1-rc.2`，精确匹配则不覆盖）而通过。
-
-peer 区间写成**区间枚举**（`>=0.1.2-rc.1 <0.1.3-0 \|\| >=0.1.5-rc.3 <0.1.6-0 \|\| >=0.1.7-rc.1 <0.1.8-0 \|\| >=0.2.0-rc.2 <0.2.1-0 \|\| >=0.2.1-rc.2 <0.2.2-0 \|\| >=0.2.2-alpha.2 <0.2.3-0`）而不是 `^` 前缀，是因为 node-semver 默认比较方式（不带 `includePrerelease`）下，带预发布的版本要求比较器里存在同一 `[major.minor.patch]` 元组的锚点。`^0.2.1-rc.2` 展开为 `>=0.2.1-rc.2 <0.3.0-0`，锚点元组只有 `0.2.1` 与 `0.3.0`，因此 `satisfies('0.2.2-rc.1', '^0.2.1-rc.2')` 为**假**——宿主升到 0.2.2-rc.1 后，旧写法会把插件判成不兼容（本仓库 11-13 就踩了这一条，直到发版检查才发现）。区间写法显式给出 `>=0.2.2-alpha.2 <0.2.3-0` 这个跨版本段，才覆盖得住 0.2.2 的任意预发布。
-
-本次上游发布 `0.2.1-rc.2` 后，已按该规约在枚举中补入 `^0.2.1-rc.2`。这是**持续动作**：补一项只吃得住「该代 rc + 该代稳定版」，下一个 rc 代次仍需再补一项，任何单条区间都无法一次性向前覆盖未来的预发布代次。
-
-影响面限于 npm。用 `npm pack` 产出的 tarball 安装（`file:` 指向目录时 npm 按 link 安装并跳过 `peerDependencies`，测不出结果）：在宿主 `0.2.1-rc.2` 下，枚举未补项时 `npm install` 以 `ERESOLVE` 失败（退出码 1），补入 `^0.2.1-rc.2` 后退出码 0；`pnpm install` 两种写法都是退出码 0，`pnpm peers check` 报 `No peer dependency issues found`，因为 pnpm 按范围交集判定而不走默认 satisfies。
-
-自检（只读求值，不写入任何状态；需已安装 dsh，即 `command -v dsh` 有值）：
-
-```bash
-node -e 'const p=require("path"),{createRequire}=require("module");const s=createRequire(p.dirname(require.resolve("@deepseek-ai/dsh-app-boot",{paths:[process.argv[1]]})))("semver");const v="0.2.1-rc.2",r="^0.2.0-rc.2";console.log("gate includePrerelease:",s.satisfies(v,r,{includePrerelease:true}),"/ default semantics:",s.satisfies(v,r))' "$(command -v dsh)"
-```
-
-输出 `gate includePrerelease: true / default semantics: false`：同一个版本对同一个区间，在闸门比较方式（带 `includePrerelease`）下成立、在 node-semver 默认语义下不成立。
-
-### 内核代次验证（2026-10-20 复核）
-
-| DSH 内核 | 验证内容 | 结果 | 实测日期 |
-|---|---|---|---|
-| `0.1.1-rc.2` | host 入口链接、真实启动（headless）过插件阶段、真实启动（web）client bundle HTTP 200 | ✅ | 2026-09-07 |
-| `0.1.2-rc.1` | host 入口链接、真实启动（headless）过插件阶段、真实启动（web）client bundle HTTP 200 | ✅ | 2026-09-07 |
-| `0.2.1-rc.2` | `npx tsc --noEmit` 干净；`npx vitest run` 全部用例通过（unit + integration）；宿主兼容性闸门（`evaluatePluginCompatibility`）判 PASS | ✅ | 2026-10-20 |
-
-两行 0.1.x 是历史实测记录：当前的 `engines.dsh` 区间不再覆盖 `0.1.1-rc.2` 与 `0.1.2-rc.1`（用宿主自带 semver 求值为假），这两个版本现在会被闸门拒绝，本插件不再声称支持。`0.2.1-rc.2` 这一行**只记录构建、测试与闸门三项**，真实启动（headless / web）在 0.2.x 上尚未验证。`peerDependencies` 的枚举里仍保留 `^0.1.1-rc.2` 与 `^0.1.2-rc.1` 两项，别把它读成功能承诺：声明了 `engines.dsh` 时 peers 整体不参与闸门判定，这两项的实际作用是让**安装期**解析得到满足。
-
-本插件设置命名空间写作 `'wakatime' as SettingsNamespace`（type-only 导入），不使用 `settingsNamespace()` helper —— 它在 `0.1.2` 已被删除，运行时导入会让整个模块链接失败；格式校验两代都由 `ctx.settings.register()` 内部完成。`lib/client.js` 实测零内核导入，与代次无关。
+| **Projects** | 每次心跳的 `project`：自动从 git / `package.json` / 目录名推断 |
+| **Categories** | 工具调用映射（见[类别映射](#类别映射)）——`coding` / `browsing` / `researching` 等 |
+| **Languages** | 按文件扩展名推断 |
+| **Editors** | 由心跳的 `User-Agent`（`dsh/1.0.0 dsh-wakatime/1.0.0`）推出，所以"在 DSH 里干活"在面板上单独成了一类 |
 
 ## 安装
 
-### 本地开发安装
-
 ```bash
-# 在插件目录下执行
-dsh plugin --profile web add /path/to/dsh-wakatime-plugin
+dsh plugin --profile web add dsh-wakatime-plugin
 ```
 
-### 从 Git 仓库安装
+装完**重启 `dsh web`** 生效。然后到 **设置 → WakaTime** 填 API Key。
 
-### 内部分发
+<details>
+<summary>其他安装方式</summary>
 
-本插件在内部 Gitea 上以私有库分发。**内网地址不写进公开文档**——需要从内网安装时，
-向维护者索取仓库地址，格式为：
-
-```bash
-# 安装固定 commit（推荐：避免跟到未经验证的改动）
-dsh plugin --profile web add <内部仓库地址>#<commit-sha>
-```
-
-或从 GitHub（或其他任意 git 托管平台）安装：
+从 GitHub 装：
 
 ```bash
 dsh plugin --profile web add github:dsh-plugin-collection/dsh-wakatime-plugin
 ```
 
-### 从源码构建
-
-如果从 git 安装，需要先构建：
+本地开发装（插件目录下）：
 
 ```bash
-cd dsh-wakatime-plugin
-pnpm install
-pnpm build
+dsh plugin --profile web add /path/to/dsh-wakatime-plugin
 ```
 
-或者添加一个 `prepare` 脚本，在 pnpm install 时自动构建：
+从源码构建装：
 
-```json
-{
-  "scripts": {
-    "prepare": "tsc"
-  }
-}
+```bash
+cd dsh-wakatime-plugin && pnpm install && pnpm build
 ```
+
+内部分发：本插件另在内部 Gitea 上以私有库分发，需要时向维护者索取仓库地址，建议固定 commit 安装：
+
+```bash
+dsh plugin --profile web add <内部仓库地址>#<commit-sha>
+```
+</details>
 
 ## 配置
 
-### WebUI 设置面板（推荐）
+全部设置都在 **设置 → WakaTime**，保存即生效，无需重启。
 
-安装并重启 DSH 后：
+| 项 | 说明 |
+|---|---|
+| **API Key** | WakaTime API key（密码框展示）。留空时依次回退环境变量 `WAKATIME_API_KEY` → `~/.wakatime.cfg` → `cordis.patch.yml` |
+| **API URL** | 服务地址，默认 `https://wakatime.com`；自托管 WakaTime 填自己的 |
+| **代理地址** | `http://host:port`。留空依次回退 `HTTPS_PROXY` → `~/.wakatime.cfg` 的 `proxy`；填 `none` 强制直连 |
+| **不走代理的地址** | 逗号分隔，留空沿用 `NO_PROXY`。如 `wakatime.com` 表示该域名直连 |
+| **心跳间隔** | 60000–300000 ms |
+| **项目名称 / 语言** | 留空自动识别，填了则覆盖 |
+| **终端应用名** | 命令类心跳的 entity，默认 `Terminal`；可填 `DSH` 之类 |
+| **追踪开关 ×3** | 工具调用 / 用户消息 / AI 消息 |
+| **缓存** | 是否本地缓存 + 上限（10–1000 条） |
+| **调试模式** | 打印更详细的日志 |
 
-1. 打开 WebUI
-2. 进入 **Settings** → **WakaTime**
-3. 配置以下选项：
-   - **API Key**：你的 WakaTime API key（以密码框形式展示）
-   - **API URL**：服务基础地址（用于自托管 WakaTime）
-   - **代理地址 / Proxy URL**：`http://host:port`；留空依次回退 `HTTPS_PROXY` 环境变量与 `~/.wakatime.cfg` 的 `proxy`；填 `none` 强制直连
-   - **不走代理的地址 / No-proxy hosts**：逗号分隔，留空沿用 `NO_PROXY`；如填 `wakatime.com` 表示该域名直连
-   - **Heartbeat Interval**：心跳发送间隔（60000–300000ms）
-   - **Project Name**：覆盖自动识别的项目名
-   - **Language**：覆盖自动识别的语言
-   - **Terminal App Name**：命令执行类心跳的 entity（应用名）；留空按 `Terminal` 上报
-   - **Track Tool Calls**：启用/禁用工具调用追踪
-   - **Track User Messages**：启用/禁用用户消息追踪
-   - **Track AI Messages**：启用/禁用 AI 消息追踪
-   - **Cache Heartbeats**：启用/禁用本地缓存
-   - **Cache Limit**：最大缓存心跳条数（10–1000）
-   - **Debug Mode**：启用调试日志
+**API Key 优先级**：设置页 → `WAKATIME_API_KEY` 环境变量 → `cordis.patch.yml` → `~/.wakatime.cfg`。三层都只接受非空字符串，形状不对的会被忽略并回退，同时告警里说明。
 
-所有设置即时生效（无需重启）。
+## 验证
 
-### 其他配置方式
+装完按这四步确认它在工作：
 
-如果你更偏好配置文件：
+1. **看日志**——重启后应有 `loaded with API key waka_****xxxx`；
+2. **让 DSH 做点事**——读一个文件、跑一条命令；
+3. **等一个心跳周期**（默认 120 秒），日志出现发送成功；
+4. **打开 WakaTime 面板**——今天的时间、项目、语言三项应出现对应记录。
 
-**环境变量：**
+如果第 3 步没动静，先看本地缓存：
+
 ```bash
-export WAKATIME_API_KEY=sk-xxxxxxxxxxxx
+wc -l ~/.dsh/wakatime/heartbeat-cache.jsonl
 ```
 
-**cordis.patch.yml：**
-```yaml
-- insert:
-  - id: dsh-wakatime
-    name: 'dsh-wakatime'
-    config:
-      api_key: sk-xxxxxxxxxxxx
-      debug: true
-```
+- `0` 行或文件不存在 = 一切正常（缓存只在失败时写入）；
+- **持续增长** = 发送在失败，这时看日志里的 `上报失败…`。
 
-**~/.wakatime.cfg（WakaTime 标准配置）：**
-```ini
-[settings]
-api_key = sk-xxxxxxxxxxxx
-```
+## 兼容性
 
-### 配置优先级
-
-1. WebUI 设置（最高优先级）
-2. 环境变量 `WAKATIME_API_KEY`
-3. `cordis.patch.yml` 配置
-4. `~/.wakatime.cfg` 中的 api_key
-5. 插件 schema 默认值（最低优先级）
+| 端 | 说明 |
+|---|---|
+| **DSH** | 支持范围见 `package.json` 的 `engines.dsh`；当前覆盖 `0.1.2` ~ `0.2.3` 各代（含预发布）。宿主启动时会校验，不匹配会禁用插件 |
+| **Node** | ≥ 22.19（含 24+） |
+| **平台** | Windows / macOS / Linux |
+| **WakaTime** | 官方 wakatime.com，或任意 WakaTime 兼容自托管服务 |
+| **其他遥测插件** | 每个 profile 只保留一个心跳后端，勿与 codetime 等同类插件同时启用 |
 
 ## 类别映射
 
 | DSH 工具 | WakaTime 类别 | is_write |
 |---|---|---|
-| `write` | `coding` | true |
-| `edit` | `coding` | true |
-| `read` | `browsing` | false |
-| `bash` / `pwsh` | 由命令本身判定，见下方「shell 类别判定」 | false |
-| `grep` / `glob` | `browsing` | false |
-| `web_search` | `researching` | false |
-| `mcp__codegraph__codegraph_explore` | `code reviewing` | false |
-| `mcp__langfuse__*` | `debugging` | false |
-| `subagent` / `subagent_fork` | `coding` | false |
-| `workflow` | `coding` | false |
-| `todo_write` | `coding` | false |
-| `ask_user_question` | `communicating` | false |
-| 用户消息事件 | `communicating` | false |
-| AI 回复事件 | `ai coding` | false |
-| `skill` | `learning` | false |
-| 其他 | `coding` | false |
+| `write` / `edit` | `coding` | ✅ |
+| `read` / `grep` / `glob` | `browsing` | — |
+| `bash` / `pwsh` | **由命令内容判定**（见下） | — |
+| `web_search` | `researching` | — |
+| `mcp__codegraph__codegraph_explore` | `code reviewing` | — |
+| `mcp__langfuse__*` | `debugging` | — |
+| `subagent` / `subagent_fork` / `workflow` / `todo_write` | `coding` | — |
+| `ask_user_question` / 用户消息 | `communicating` | — |
+| AI 回复 | `ai coding` | — |
+| `skill` | `learning` | — |
+| 其他 | `coding` | — |
 
-## 架构
+**shell 类别**不再一律记成 `building`——那是早期实现，用账号里 5290 条 shell 心跳复盘发现 98.7% 的"构建时间"其实不是构建。现在按命令本身判定：
+
+| 命令 | 判为 |
+|---|---|
+| `ls` / `cat` / `grep` / `sed` / `head` … | `browsing` |
+| `git` / `pnpm build` / `docker build` … | `coding` / `building` |
+| `pnpm test` / `vitest` | `running tests` |
+| 认不出来 | `coding` |
+
+判定只看**裸子命令**，不看后续参数（`grep -n foo test/a.py` 里的 `test` 不会被当成跑测试），并且会先剥掉 `cd … &&`、`sudo`、`npx` 这类包装前缀。
+
+## 已知限制
+
+- **只追踪到文件与应用粒度相近的程度**——DSH 的工具调用没有细粒度的光标位置，WakaTime 上的行级明细不如 IDE 插件精确；
+- **DSH 侧的 AI token 口径与 IDE 不同**：宿主给的是「未命中 + 缓存命中」两个互斥分量，插件分字段上报，不与 IDE 插件的数字直接可比；
+- **历史数据不可回溯**：`entity` / `category` 的形态一旦改变，按这两个维度做跨版本对比会断裂；
+- **读端点不可用**：WakaTime 自 2026-10 起对插件 key 封锁读端点（详见[开发](#开发)），因此插件无法回读自己的数据做校验。
+
+## 开发
+
+<details>
+<summary>构建、测试与架构</summary>
+
+```bash
+pnpm install
+pnpm build        # 清空 lib/ 后重建 host + client
+pnpm typecheck
+pnpm test         # vitest，169 个用例
+```
 
 ```
 src/
-├── index.ts      # 插件入口：注册事件监听与定时器
-├── wakatime.ts   # WakaTime API HTTP 客户端
-├── tracker.ts    # 文件级活动追踪器
-├── project.ts    # 基于 git 的项目/分支推断
-├── language.ts   # 按文件扩展名推断语言
-├── diff.ts       # write/edit 的行数 diff 计算
-├── cache.ts      # 本地心跳缓存（JSONL 文件）
-├── settings.ts   # 配置 schema 与 WebUI 设置面板注册
-└── types.ts      # 类型定义与常量
+├── index.ts         # 插件入口：事件监听、定时器、配置迁移
+├── config-value.ts  # volatile ref 解包与逐字段校验
+├── wakatime.ts      # HTTP 客户端：代理、批量上报、逐条状态解析
+├── tracker.ts       # 事件 → 心跳的转换与合并
+├── cache.ts         # 本地 JSONL 缓存与按时间裁剪
+├── project.ts       # git / package.json 项目名推断
+├── category.ts      # shell 命令 → 类别判定
+├── language.ts      # 扩展名 → 语言
+├── diff.ts          # write/edit 行数计算
+└── types.ts         # 类型与常量
 ```
+</details>
 
-## 开发与打包
+<details>
+<summary>批量上报契约：外层恒 2xx + 逐条状态码</summary>
 
-### 四个版本敏感的接线点（0.2.2 仍成立）
+`heartbeats.bulk` 的响应**外层永远 202**，真正的结果在 `responses` 数组的逐条状态码里。只判 `response.ok` 的实现会把整批被拒读成整批成功——被拒的心跳既不进缓存也不报错，是纯粹的数据丢失。
 
-| 接线点 | 规则 | 依据 |
-|---|---|---|
-| WebUI 槽位 `plugins.bundle.config` 的 key | 是**插件包名**（`package.json` 的 `name`），不是 settings 命名空间，也不是 profile 条目 id；key 不匹配则该 bundle 页面没有配置卡片 | 宿主 `dsh-client-ui-plugin-manager/lib/types/client/slot-contract.d.ts:149`（"keyed by the bundle's package name"），渲染处 `lib/client.js:2964` 传 `{ entryKey: pkg.name }` |
-| `@deepseek-ai/dsh-client-ui-primitives` 的引用方式 | 必须保持 **external**，不能打进 `lib/client.js`：宿主 web 模块表常驻该 id，官方 client 包同样 `require("@deepseek-ai/dsh-client-ui-primitives")`；打进包会把整套图标复制一份 | 宿主 `dsh-web-frontend/dist/assets/index-*.js` 模块表含该 id；`dsh-client-ui-plugin-manager/lib/client.js:10`；本仓库 `build.mjs:28` |
-| 设置页自动投影 | 依赖插件 Config 上的 `.volatile()`；投影逻辑在宿主 `dsh-app-boot`（把 `volatile` 写进 schema 的 `x-cordis`） | 本仓库 `src/index.ts`；宿主 `dsh-app-boot/lib/index.js` 的 `validateVolatilePlacement` 与投影分支 |
-| `.volatile()` 字段交到插件手里是 **ref 对象**，不是值 | `apply()` 收到的每个 volatile 字段都是 `Object.freeze({ get: () => value, [write]: … })`；**必须解包后才能用**，`dsh-settings` 自己也是这么做的（`plainConfig`）。直接当值用会以多种方式静默失效：`api_url` 拼出非法 URL、`heartbeat_interval_ms` 被 Node 当 1ms、布尔恒真、字符串字段整个不发、`cache_limit` 比较恒 false。本插件统一在 `src/config-value.ts` 规范化，入口与文档层都过一遍 | 宿主 `cosmokit/lib/index.js` 的 `createVolatile` / `isVolatile`；`dsh-settings/lib/index.js` 的 `plainConfig`（`if (isVolatile(value)) return plainConfig(value.get())`）；0.2.1 与 0.2.2 两代实测一致 |
+本插件的处理：
 
-### 依赖与宿主版本漂移
-
-| 事项 | 说明 |
+| 逐条状态 | 处理 |
 |---|---|
-| 包管理器只有 pnpm | 仓库只认 `pnpm-lock.yaml`（配套 `pnpm-workspace.yaml`），没有 `package-lock.json`；安装与锁文件更新一律走 pnpm |
-| `typescript` 必须是显式 devDependency | `scripts.build` / `prepare` / `watch` 都调 `tsc`。11-10 之前它**根本不在 devDependencies 和 lockfile 里**（grep 命中 0），构建能成纯粹因为环境里恰好有个外来 tsc——换机器、干净 clone、或 `pnpm install --frozen-lockfile` 都会直接构建失败（`prepare` 在装依赖时就会炸）。现已声明 `typescript: ^5.9.0`（与同 workspace 的兄弟插件一致），构建脚本改用本地 `./node_modules/.bin/tsc` 而不是 `npx tsc`（`npx` 在缺失时会去装一个同名废弃包 `tsc@2.0.4`，报"这不是你要的 tsc"） |
-| 开发期依赖精确钉版 | devDependencies 把 `@deepseek-ai/dsh-agent` / `@deepseek-ai/dsh-session` / `@deepseek-ai/dsh-settings` / `@deepseek-ai/dsh-client-ui-primitives` 全部钉到 `0.2.1-rc.2`（`@deepseek-ai/cordis` `^4.0.5`、`@deepseek-ai/schemastery` `^3.18.5` 仍为区间）。这只是开发期取值，不构成对外契约：运行时闸门只看 `engines.dsh`，对外区间是上面的 peer 列表。`@deepseek-ai/dsh-client-ui-primitives` 列为显式 devDependency 只为开发期解析，打包时仍必须保持 external（见上表） |
-| 宿主一方包 peers 精确 pin | 0.2.1 起宿主各包对 `@deepseek-ai/dsh-*` 的 peers 全部精确 pin 到同一版本（`@deepseek-ai/cordis` 仍是 `~4.0.5` 区间）。这是宿主 monorepo 内部的做法，插件不要照抄，见上方「peers 要写区间」 |
-| `@deepseek-ai/dsh-invariants` 已停更 | registry 末版为 `0.2.0-rc.2`，0.2.1-rc.2 的宿主包集合里没有这个包；devDependencies 里若残留它，升级后应移除 |
-| 0.2.1 移除设置客户端的 memory 持久化模式 | `ConfigFormSnapshot` 不再有 `mode: 'host' \| 'memory'`；describe mirror 的 `SettingsMirrorSnapshot.status` 不再有 `'unavailable'`，只剩 `'idle' \| 'loading' \| 'ready'`；`ConfigFormController` 构造函数少一个 persistence 参数（现为 `ctx, spec, mirror, schema`）。依据：宿主 `dsh-client-ui-settings/lib/types/client/config-form-types.d.ts:6-29`、`settings-mirror.d.ts:21-31`、`config-form.d.ts:49`。插件代码不得读取 `snapshot.mode` |
-| 写入返回受理结果（0.2.0 起的既有契约，非 0.2.1 新增） | `ConfigForm.set` / `unset` / `mutate` 返回 `Promise<boolean>`：`true` 为 Host 受理，`false` 为被拒绝或写入被跳过；传输失败仍会 reject。依据：`config-form-types.d.ts:49-70` |
+| `2xx` | 已落库 |
+| `4xx`（除 429） | 永久失败，丢弃并告警，带服务端原因 |
+| `429` / `5xx` | 回缓存重试 |
 
-## 常见问题
+字符串字段按服务端硬上限预先裁剪：`entity` ≤ 2083、`project` / `branch` ≤ 1024，空串同样被拒。被裁剪过的 `entity` 以 `...` 结尾。
+</details>
 
-### 插件没有加载
+<details>
+<summary>缓存策略</summary>
 
-1. 检查 `lib/` 目录是否存在且包含编译后的 JS 文件
-2. 如果缺失，运行 `pnpm run build`
-3. 查看 DSH 日志中的报错信息
+- 只在**发送失败**时写入，成功即排空；
+- 并发冲刷串行化，且只把**确实没落库**的心跳写回（早期版本会把已入库的也写回，导致重复上报）；
+- 超过上限时**按时间**裁掉最旧的，并告警 `缓存超过上限（N 条），最旧的 M 条心跳已被丢弃（from → to）`——这条出现就是真的开始丢数据了。
+</details>
 
-### WebUI 中看不到设置项
+<details>
+<summary>AI token 口径</summary>
 
-1. 确认插件已加入 `package.json` 的 `bundles` 列表
-2. 完全重启 DSH
-3. 检查浏览器控制台是否有报错
+宿主的 `TokenUsage` 三个输入分量是**互斥**的：`inputTokens` 只是未命中部分，缓存命中单独记在 `cacheReadTokens`，计费输入 = 三者之和。
 
-### 心跳没有发送
+本插件把未命中报进 `ai_input_tokens`、缓存命中报进 `ai_cached_input_tokens`，**不把两者相加**；`cacheWriteTokens` 在 WakaTime 侧没有对应字段，不上报。
 
-按这个顺序查，能在十分钟内定位到原因（本插件曾因此静默断流一整周）：
+一个实测样本：某会话计费输入 80.1M，其中缓存命中 78.7M（98%+）。只报未命中的实现会让 WakaTime 的 Tokens 比本地面板小两个数量级。
+</details>
 
-1. **先看本地缓存，而不是先看日志。** `~/.dsh/wakatime/heartbeat-cache.jsonl`
-   只有在发送失败时才写入，发送成功时会被排空。它**持续增长或长期顶在 Cache Limit
-   上限**就说明发送在持续失败；此时越旧的心跳被挤掉得越多，那段活动已经不可恢复。
-   （缓存**远超** Cache Limit 也是一个信号：说明 `cache_limit` 本身没被当成数字
-   用到了——见第 3 步的配置降级。超限时插件会按**时间**裁掉最旧的并告警，
-   不再无声删除；被裁掉的就是真的没了。）
-2. **读告警，不需要开 debug。** 失败一律无条件 warn 并带原因，且 **logger + console
-   双写**（本宿主的 `ctx.logger` 不进 stdout/stderr 捕获文件，只走 logger 等于没有
-   日志——这是本插件两次静默断流没人发现的直接原因）：
-   `上报失败…`（传输/鉴权/限流）、**`缓存超过上限（N 条），最旧的 M 条心跳已被丢弃（from → to）`**
-   （这条出现就意味着数据真的开始丢了，且丢失时段无法补回）、`N/M 条心跳被 WakaTime 逐条拒绝并已丢弃…`
-   （载荷不合法）、`cache flush failed…`（补发也发不出去）。
-3. **升级宿主后先看有没有「配置字段不是可用值」这条告警。** 标了 `.volatile()` 的
-   字段由 cosmokit 以 `Object.freeze({ get, [write] })` 的 **ref 对象**交给插件，
-   插件侧统一在 `src/config-value.ts` 解包并逐类型校验；一旦某字段解不出可用值，
-   会回退默认值/现值并列出字段名与形状（不含值）。为什么必须有这层：ref 直接当值用
-   时，同一个升级会同时造成 `api_url` → 非法 URL（请求根本没发出）、
-   `heartbeat_interval_ms` → `setInterval(fn, NaN)` 被 Node 当成 1ms（隔离进程里复现过
-   1 秒 915 次；但**宿主日志里从未出现对应警告**，所以这里只断言 Node 的既定行为，
-   不断言它必然在宿主内发生，也不把任何 CPU 数字归因给它——重启并规范化配置之后宿主
-   CPU 仍在 240% 量级，说明瓶颈不在这里）、`include_*=false` → 对象恒 truthy（关掉的追踪照发）、
-   `project_name`/`language` → 两个字段整个不发、`cache_limit` → 缓存永不裁剪。
-4. **确认这把 key 真的可用。** 看告警就够了：`未配置 WakaTime API Key` = 三层来源
-   都没有可用值；`WakaTime API Key 无效` = 服务端回了 401；`上报失败…（cause: …）` =
-   传输层问题。key 的取值顺序是配置层 → `WAKATIME_API_KEY` → `~/.wakatime.cfg`，
-   三层都只接受**非空字符串**，形状不对会被忽略并继续回退，同时在告警里给出形状摘要。
-   （设置页曾提供「项目名称」候选下拉，靠 `/users/current/projects` 拉取；该读端点
-   现已对插件 key 返回 403，候选功能已移除，项目名称改为自由输入。）
-5. **检查到 WakaTime 的网络连通性，并注意代理口径。** 出口代理按这个顺序取，**先命中先赢**：
+<details>
+<summary>版本闸门与 peer 写法</summary>
 
-   | 优先级 | 来源 | 说明 |
-   |---|---|---|
-   | 1 | 设置页「代理地址」 | 填 `none` / `direct` 强制直连（应急切断代理） |
-   | 2 | `HTTPS_PROXY` / `https_proxy` / `HTTP_PROXY` / `http_proxy` | DSH 自己全部出网也走这条路 |
-   | 3 | `~/.wakatime.cfg` 的 `[settings] proxy` | wakatime-cli 读的就是它 |
-   | — | 都没有 → 直连 | |
+宿主 `dsh-app-boot` 的 `evaluatePluginCompatibility` 只读插件 `package.json`，规则：
 
-   上一档的值**不是合法 `http(s)` 地址时会被忽略并告警**，然后继续往下退——不会出现
-   "配了代理却没生效且毫无痕迹"。启动时 debug 模式会打一行
-   `网络出口 经代理 http://…（来源：设置页）`，直接回答"现在到底走了哪条"。
-   `NO_PROXY` / 「不走代理的地址」支持 `*`、精确主机与 `.suffix` 写法（`example.com`
-   也匹配其子域）。
-   为什么插件要读 cfg：实测同一台机器上 curl 直连、curl 经代理、node 直连都 20/20 通，
-   唯独插件间歇 `fetch failed（cause: ETIMEDOUT）`——因为它是同机上唯一不走代理的那条
-   链路，而用户的代理本来就配在 cfg 里。诊断信息现在会带 `cause`（ECONNRESET /
-   ETIMEDOUT / ENOTFOUND…），不再只有一句 `fetch failed`。
-6. **怀疑「跑的不是你改的代码」时先确认构建指纹。** 日志里
-   `apply called; artifact mtime=… pid=…` 直接回答这个进程载入了哪一次构建。
-   热重载可能留下旧 fiber 继续以旧代码发送——行为与代码不一致时先完全重启 DSH。
-7. **载荷长度是硬校验。** `entity` ≤ 2083、`project` / `branch` ≤ 1024，
-   空串同样被拒。插件会先裁剪再发，被裁剪过的 `entity` 以 `...` 结尾；
-   仍然出现「逐条拒绝」告警时，说明有字段不在裁剪覆盖范围内，请把告警里的
-   服务端原因贴到 issue 上。
-8. **想直接用 API 回读自己的数据时，插件 key 已经不够了。** WakaTime 自 2026-10 起
-   对读端点（`/users/current`、`/users/current/projects`、`/users/current/heartbeats`）
-   使用插件 key 返回 `403 API Keys are only for plugins, use your personal oauth token`，
-   而**写端点 `heartbeats.bulk` 仍接受插件 key**。这是上游策略变化，不是本插件的鉴权
-   bug。后果之一：依赖读端点的「项目名称」候选下拉已经移除（见第 4 步）；另一个——
-   排查时别把这次 403 误读成 key 失效，判断 key 是否可用要看写端点或本插件的失败告警。
+| 条件 | 行为 |
+|---|---|
+| 有 `engines.dsh` | **只比较这一个区间**，`peerDependencies` 被忽略 |
+| 没有 `engines.dsh` | 每个 `@deepseek-ai/dsh*` 前缀的 peer 都要被运行版本满足 |
+| 比较方式 | `semver.satisfies(运行版本, 区间, { includePrerelease: true })` |
+| 不通过 | 打印 `Plugin … is incompatible with dsh …` 并禁用该条目 |
 
-### shell 类别判定
+**peer 要写区间枚举，不要写 `^` 前缀，更不要写精确版本。** 原因是 node-semver 默认语义（不带 `includePrerelease`）下，预发布区间只在比较器含有同一 `[major.minor.patch]` 元组锚点时才匹配：`^0.2.1-rc.2` 展开为 `>=0.2.1-rc.2 <0.3.0-0`，锚点只有 `0.2.1` 与 `0.3.0`，因此 `satisfies('0.2.2-rc.1', '^0.2.1-rc.2')` 为**假**——宿主升到 0.2.2-rc.1 后插件会被判成不兼容。显式写出 `>=0.2.2-alpha.2 <0.2.3-0` 才覆盖得住。
 
-`bash` / `pwsh` 的类别由命令本身决定（`src/category.ts`），不再一律记 `building`。
-用账号里已存的 5290 条 shell 心跳复盘，改动前后的分布是：
+宿主 0.2.1 的一方包把 dsh peers 精确 pin 到同一版本（如 `@{deepseek-ai/dsh-agent}: "0.2.1-rc.2"`），插件照抄会在下一个 rc 上被整片禁用——本机日志里 `webhook-runtime` / `webhook-github` 两条就是这样消失的。
+
+**补充 peer 枚举是持续动作**：补一项只吃得住的「该代 rc + 该代稳定版」，下一代仍需再补。
+</details>
+
+<details>
+<summary>四个版本敏感的接线点（0.2.2 仍成立）</summary>
+
+| 接线点 | 规则 |
+|---|---|
+| WebUI 槽位 `plugins.bundle.config` 的 key | 是**插件包名**，不是 settings 命名空间也不是 profile 条目 id；不匹配则没有配置卡片 |
+| `@deepseek-ai/dsh-client-ui-primitives` | 必须保持 **external**，打进包会把整套图标复制一份 |
+| 设置页自动投影 | 依赖 Config 上的 `.volatile()`，投影逻辑在宿主 `dsh-app-boot` |
+| `.volatile()` 字段是 **ref 对象** | `apply()` 收到的是 `Object.freeze({ get })` 而非值。**必须解包**，否则 `api_url` 拼出非法 URL、`heartbeat_interval_ms` 被当成 1ms、布尔恒真、字符串字段整个不发、`cache_limit` 永不裁剪。本插件统一在 `src/config-value.ts` 处理 |
+</details>
+
+<details>
+<summary>shell 类别判定实测</summary>
+
+用账号里 5290 条 shell 心跳复盘：
 
 | 类别 | 改动前 | 改动后 |
 |---|---|---|
@@ -347,40 +261,67 @@ src/
 | `running tests` | — | 0.5% |
 | `debugging` | — | 0.3% |
 
-也就是说此前看到的「构建时间」里 98.7% 其实不是构建。
+类别取值只用 WakaTime 权威集合（`wakatime-cli` 的 `pkg/heartbeat/category.go`）：表里既没有 `deployment` 也没有 `testing`（正确值是 `running tests`），自造词在面板上无法聚合。
+</details>
 
-判定规则与几点硬约束：
+<details>
+<summary>命令心跳的 entity</summary>
 
-- **只看裸子命令，不看后续参数。** 反例是 `grep -n foo test/a_test.py`——路径里
-  含 `test` 曾被误判成跑测试（账号里凭空多出 411 条假测试记录）。文件检视类命令
-  （`ls` / `cat` / `grep` / `sed` / `head` …）无条件算 `browsing`。
-- **先剥包装层**：前导 `cd <dir> &&`、`export`、`sudo` / `time` / `timeout`、
-  以及 `npx` / `bunx` 的一次性执行前缀（含 `--yes`、`--package <包>`、`vitest@2`
-  这些形式），否则 DSH 会话里最常见的 `cd repo && pnpm test | tail` 永远取到 `cd`。
-- **类别取值只用 WakaTime 权威集合**（见 `wakatime-cli` 的 `pkg/heartbeat/category.go`）：
-  表里没有 `deployment`，也没有 `testing`（正确值是 `running tests`）；自造词在面板上
-  无法聚合。`docker` / `kubectl` 这类平台工具因此按子命令拆成 `browsing`（看状态）
-  与 `building`（执行变更）。
-- 认不出来的命令按 `coding` 计。
+`bash` / `pwsh` 心跳的 `type` 是 `app`。按 wakatime-cli 的定义（*"AppType represents an app entity"*），app 类型的 entity 应该是**应用名**而不是命令行。早期把整行命令当 entity，5281 条 shell 心跳散成 **5158 个不同 entity，98.2% 只出现过一次**——既无聚合价值，又随时可能撞上 2083 字符上限被逐条 400 拒收。
 
-### 命令心跳的 entity
+现在取设置项「终端应用名」（默认 `Terminal`），命令在做什么由 `category` 表达。5 秒窗口内的合并键是 `entity + category`，否则同一应用名下一条 `ls` 会覆盖掉 5 秒前的 `pnpm test`。
 
-`bash` / `pwsh` 心跳的 `type` 是 `app`。按 wakatime-cli 的定义（*"AppType represents
-an app entity"*），app 类型的 entity 应该是**应用名**，不是命令行。此前把整行命令当
-entity，实测 5281 条 shell 心跳散成 **5158 个不同 entity，其中 98.2% 只出现过一次**——
-既没有聚合价值，又随时可能撞 entity 的 2083 字符硬校验被逐条 400 拒收。
+用户消息 / AI 回复类心跳**有意保留** `dsh-session-<id>` 作为 entity：基数由会话数决定（有界），且是唯一能按会话下钻的维度。
+</details>
 
-现在它取设置项「终端应用名」，默认 `Terminal`，可填成 `DSH` 之类；留空回退默认值
-（空 entity 会被服务端拒绝，不存在"发空值"这条路）。命令在做什么由 `category` 表达。
-5 秒窗口内的重复调用仍会合并成一条，但合并键是 `entity + category`——否则同一应用名
-下，一条 `ls` 会把 5 秒前的 `pnpm test` 覆盖掉。
+<details>
+<summary>代理口径</summary>
 
-用户消息 / AI 回复类心跳**有意保留** `dsh-session-<id>` 作为 entity：它的基数由会话数
-决定（有界），且是唯一能按会话下钻的维度；AI 侧另有 `ai_session` 字段承载会话身份。
+出口代理按 **设置页 → 环境变量 → `~/.wakatime.cfg` → 直连** 的顺序取，先命中先赢。某一档不是合法 `http(s)` 地址时会被**忽略并告警**，然后继续回退。
 
-遗留边界：shell 心跳的 `language` 仍固定为 `Shell`；entity 形态一经改变无法回溯，
-按 entity 维度的跨版本对比会断裂。
+启动时 debug 模式会打一行 `网络出口 经代理 http://…（来源：设置页）`，直接回答"现在走了哪条"。带账号密码的代理会被脱敏成 `***:***` 再打日志。
 
-## 许可证
+`NO_PROXY` / 「不走代理的地址」支持 `*`、精确主机与 `.suffix`（`example.com` 也匹配其子域）。
 
-MIT
+为什么插件必须读 cfg：实测同机上 curl 直连、curl 经代理、node 直连都 20/20 通，唯独插件间歇 `fetch failed`——因为它是同机上唯一不走代理的那条链路，而代理本来配在 `~/.wakatime.cfg` 里。
+</details>
+
+<details>
+<summary>读端点 403：为什么不能再回读数据</summary>
+
+WakaTime 自 2026-10 起对读端点（`/users/current`、`/users/current/projects`、`/users/current/heartbeats`）使用插件 key 返回：
+
+```
+403 API Keys are only for plugins, use your personal oauth token
+```
+
+而**写端点 `heartbeats.bulk` 仍接受插件 key**。这是上游策略变化，不是插件的鉴权 bug。
+
+后果之一：设置页曾提供的「项目名称」候选下拉依赖 `/users/current/projects`，因此永远为空，已移除，项目名称改为自由输入。排查时也别把这次 403 误读成 key 失效——判断 key 是否可用要看写端点或失败告警。
+</details>
+
+<details>
+<summary>排障</summary>
+
+**插件没加载**：`lib/` 是否存在？`pnpm build`？日志里有没有 incompatibility 提示？
+
+**设置页看不到卡片**：确认插件在 profile 的 bundles 里；完全重启 `dsh web`；看浏览器 console。
+
+**心跳没发出去**，按这个顺序查（本插件曾因此静默断流一整周）：
+
+1. **先看缓存，再看日志**——`~/.dsh/wakatime/heartbeat-cache.jsonl` 只在失败时写入。持续增长或长期顶在上限 = 发送在持续失败，越旧的心跳被挤掉越多，那段活动已不可恢复。
+2. **读告警，不需要开 debug**——失败一律 warn 并带原因，且 **logger + console 双写**（本宿主的 `ctx.logger` 不进 stdout 捕获文件，只走 logger 等于没有日志，这是两次静默断流没人发现的直接原因）。关键告警：`上报失败…`、`缓存超过上限…已被丢弃`、`N/M 条心跳被逐条拒绝并已丢弃…`、`cache flush failed…`。
+3. **升级宿主后先看有没有「配置字段不是可用值」告警**——volatile ref 当值用会以多种方式静默失效（见上文接线点）。
+4. **确认 key 可用**——`未配置 WakaTime API Key` = 三层都没有可用值；`WakaTime API Key 无效` = 服务端 401；`上报失败…（cause: …）` = 传输层问题。诊断信息会带 `cause`（`ECONNRESET` / `ETIMEDOUT` / `ENOTFOUND`…），不再只有一句 `fetch failed`。
+5. **怀疑「跑的不是你改的代码」时看构建指纹**——日志里 `apply called; artifact mtime=… pid=…` 直接回答这个进程载入了哪次构建。热重载可能留下旧 fiber 继续以旧代码发送，行为与代码不一致时先完全重启 DSH。
+6. **载荷长度是硬校验**——仍出现「逐条拒绝」告警，说明有字段不在裁剪覆盖范围内，把告警里的服务端原因贴到 issue。
+</details>
+
+## 参考
+
+- [WakaTime API 文档](https://wakatime.com/developers)
+- [wakatime-cli](https://github.com/wakatime/wakatime-cli) —— 类别集合与字段语义的权威来源
+
+## 许可
+
+MIT © wujue
