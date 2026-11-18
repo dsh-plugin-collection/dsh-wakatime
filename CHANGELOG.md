@@ -10,6 +10,14 @@
 
 ### 修复
 
+- **改名后 client entry 不激活（`duplicate factory registration`）**：11-16 的统一改名只覆盖了
+  host 与 manifest，client 侧的工厂注册 id、`plugins.bundle.config` 槽位 key、`configForms`
+  条目 id、settings 命名空间仍留在旧名 `dsh-wakatime`。web boot 以新包名加载 bundle、工厂却
+  注册旧 id，invalidate 按包名清不掉旧工厂，二次执行即抛重复注册；宿主侧 `ENTRY_ID` 同病，
+  会让 WebUI 保存的配置行被静默忽略。现改为**构建期从 `package.json` 注入包名**
+  （`src/client/plugin-id.ts` + esbuild define），这组标识单一来源、不可能再各自漂移；
+  并新增「身份一致性」守卫用例（包名 = host name = client PLUGIN_ID = bundle 注册 id）。
+
 - **配置字段整片失效（会导致静默断流）**：标了 `.volatile()` 的字段由宿主以 `Object.freeze({ get })` 的 ref **对象**交付，旧代码当裸值用，导致
   `api_url` 拼出非法 URL（请求未发出）、`heartbeat_interval_ms` 被 Node 当成 1ms、
   `include_*=false` 恒为真、`project_name`/`language` 整个不发、`cache_limit` 永不裁剪。

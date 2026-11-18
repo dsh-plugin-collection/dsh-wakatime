@@ -598,7 +598,7 @@ describe('client/mirror.ts', () => {
       // 0.2.x 起 describe 镜像的行键 = 条目 id（dsh-wakatime），旧体系才是 wakatime。
       // 只写一个名字时，镜像即使接上了也查不到行 —— 指示灯依旧不亮。
       const snap: MirrorSnapshotLike = {
-        view: { namespaces: [{ ns: 'dsh-wakatime', secrets: [{ path: ['api_key'], set: true }] }] },
+        view: { namespaces: [{ ns: 'dsh-wakatime-plugin', secrets: [{ path: ['api_key'], set: true }] }] },
       };
       expect(secretSlotSet(snap, 'wakatime', 'api_key')).toBe(false);
       expect(secretSlotSet(snap, SETTINGS_NAMESPACE_CANDIDATES, 'api_key')).toBe(true);
@@ -607,11 +607,11 @@ describe('client/mirror.ts', () => {
         view: {
           namespaces: [
             { ns: 'wakatime', secrets: [{ path: ['api_key'], set: false }] },
-            { ns: 'dsh-wakatime', secrets: [{ path: ['api_key'], set: true }] },
+            { ns: 'dsh-wakatime-plugin', secrets: [{ path: ['api_key'], set: true }] },
           ],
         },
       };
-      expect(secretSlotSet(two, ['wakatime', 'dsh-wakatime'], 'api_key')).toBe(false);
+      expect(secretSlotSet(two, ['wakatime', 'dsh-wakatime-plugin'], 'api_key')).toBe(false);
       expect(secretSlotSet(two, ['nope'], 'api_key')).toBe(false);
     });
   });
@@ -820,5 +820,25 @@ describe('代理凭据安全（wakatime.ts）', () => {
       expect(described).not.toContain('S3cr3t');
       expect(described).toContain('proxy.corp');
     });
+  });
+});
+
+describe('身份一致性（改名漂移守卫）', () => {
+  // 11-16 改名只改了 host 与 manifest，client 工厂 id / 槽位 key / 条目 id /
+  // settings 命名空间留在旧名 → web boot 报 duplicate factory registration、
+  // client entry 不激活，且 WebUI 保存的行被宿主静默忽略。这组标识必须恒等于包名。
+  it('package.json name = host name = client PLUGIN_ID = client bundle 注册 id', async () => {
+    const { readFileSync, existsSync } = await import('node:fs');
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    const host = await import('../src/index.js');
+    const { PLUGIN_ID } = await import('../src/client/plugin-id.js');
+    expect(host.name).toBe(pkg.name);
+    expect(PLUGIN_ID).toBe(pkg.name);
+    const bundle = new URL('../lib/client.js', import.meta.url);
+    if (existsSync(bundle)) {
+      const m = readFileSync(bundle, 'utf8').match(/__ModuleLoader__\.load\(\{\s*id:\s*("[^"]+")/);
+      expect(m).not.toBeNull();
+      expect(JSON.parse(m![1])).toBe(pkg.name);
+    }
   });
 });

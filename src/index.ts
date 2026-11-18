@@ -287,7 +287,10 @@ export function apply(ctx: Context, config: Config): void {
   // 因此这里注册在插件自己的 ctx 上（而非 root）：语义上更窄、不越权广播，
   // 同时【必须】保留下面的 ns 过滤 —— 本跳根本没有过滤，任何命名空间的事件
   // 都会打进来。历史注释曾称「必须挂在 root 才能收到」，经实测为误判。
-  const ENTRY_ID = 'dsh-wakatime';
+  // 条目 id = 包名（profile patch 的 id 与 package.json name 一致）。
+  // 用导出 name 而不是再写字面量：settings 行按 ns = 条目 id 键控，
+  // 字面量漂移会让 WebUI 保存的行被宿主静默忽略（11-16 改名踩过）。
+  const ENTRY_ID = name;
   // 兼容旧版 settings.yaml 遗留的 section 名
   const SETTINGS_NAMESPACE = 'wakatime';
 

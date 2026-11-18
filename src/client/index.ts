@@ -40,9 +40,10 @@ import type { SettingsMirrorFace } from './mirror.ts';
 // （`dsh-wakatime`），旧 settings.yaml 时代才是 section 名（`wakatime`）。
 // 镜像查 secret 行用它，与 host 端行判定对齐。
 import { SETTINGS_NAMESPACE_CANDIDATES, secretSlotSet } from './mirror.ts';
+import { PLUGIN_ID, SHOW_SETTINGS_KEY } from './plugin-id.ts';
 
 /** 插件名（与 manifest id 一致）。 */
-const name = 'dsh-wakatime';
+const name = PLUGIN_ID;
 
 /** 设置页导航文案（与 dsh-suggest-ghost 同模式：thunk 随语言切换重读）。 */
 const SECTION_LABELS: Record<string, string> = {
@@ -51,13 +52,13 @@ const SECTION_LABELS: Record<string, string> = {
 };
 
 /** 设置 section 的自有 id（宿主没有的 id 才会并排新增一页）。 */
-const SETTINGS_SECTION_ID = 'dsh-wakatime';
+const SETTINGS_SECTION_ID = PLUGIN_ID;
 
 /**
  * 插件 profile 条目 id（与 `cordis.patch.yml` 的 `id: dsh-wakatime` 一致）。
  * `configForms.get()` 与 `whileServed()` 都用它寻址。
  */
-const ENTRY_ID = 'dsh-wakatime';
+const ENTRY_ID = PLUGIN_ID;
 
 /**
  * `plugins.bundle.config` 槽位的 key —— **必须是插件包名**（`package.json` 的
@@ -68,10 +69,9 @@ const ENTRY_ID = 'dsh-wakatime';
  * （参考实现 dsh-suggest-ghost 的包名与其条目 id 不同，正是靠「包名硬编码 +
  * 条目 id 只用于 `configForms.get()`」区分这两套域。）
  */
-const BUNDLE_PACKAGE_NAME = 'dsh-wakatime';
+const BUNDLE_PACKAGE_NAME = PLUGIN_ID;
 
 /** 「在设置中显示」开关的 localStorage 键（详情页开关写、此处读，注册一次定夺）。 */
-const SHOW_SETTINGS_KEY = 'dsh-wakatime:show-settings-section';
 
 /**
  * `configForms` 服务（`ctx.get('configForms')`）的最小视图。宿主实现见
@@ -203,7 +203,7 @@ export function apply(ctx: Context): void {
   const mirror = describeFaceOf(forms);
   const scope = forms.get(ENTRY_ID) as unknown as SettingsFormScope<Record<string, unknown>>;
   const controller = new WkCardController(scope, mirror);
-  ctx.effect(() => () => controller.dispose(), 'dsh-wakatime: card controller');
+  ctx.effect(() => () => controller.dispose(), `${PLUGIN_ID}: card controller`);
 
   // 插件详情页配置区：`plugins.bundle.config`，key = 包名（见 BUNDLE_PACKAGE_NAME）。
   ctx.effect(
@@ -213,12 +213,12 @@ export function apply(ctx: Context): void {
           slots.register({
             name: 'plugins.bundle.config',
             key: BUNDLE_PACKAGE_NAME,
-            locale: 'dsh-wakatime',
+            locale: PLUGIN_ID,
             inject: () => controller.inject('detail', locale),
           }, WakaTimeCard),
         ),
       ),
-    'dsh-wakatime: plugins-page card',
+    `${PLUGIN_ID}: plugins-page card`,
   );
 
   // 设置对话框中的独立设置页：默认不显示，由详情页「在设置中显示」开关控制。
@@ -240,7 +240,7 @@ export function apply(ctx: Context): void {
             }, WakaTimeCard),
           ),
         ),
-      'dsh-wakatime: settings-section',
+      `${PLUGIN_ID}: settings-section`,
     );
   }
 }

@@ -7,6 +7,7 @@
  * @module dsh-wakatime/client/mirror
  */
 
+import { PLUGIN_ID } from './plugin-id.ts';
 /** 共享 describe 镜像快照的最小结构视图（secret 槽位状态仅在此可见）。 */
 export interface MirrorSnapshotLike {
   view?: {
@@ -45,7 +46,7 @@ export interface SettingsMirrorFace {
  * 徽章永远不亮），故统一用候选序列，与 host 端 `src/index.ts` 的
  * `row.ns === ENTRY_ID || row.ns === SETTINGS_NAMESPACE` 判定对齐。
  */
-export const SETTINGS_NAMESPACE_CANDIDATES: readonly string[] = ['dsh-wakatime', 'wakatime'];
+export const SETTINGS_NAMESPACE_CANDIDATES: readonly string[] = [PLUGIN_ID, 'wakatime'];
 
 /**
  * 从镜像快照读取某 secret 字段是否已配置（线路全程脱敏，唯一可信源）。
