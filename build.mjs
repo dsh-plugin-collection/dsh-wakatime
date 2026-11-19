@@ -5,7 +5,7 @@
  * 产物：lib/index.js（host）+ lib/client.js（浏览器端）
  */
 import { execSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, rmSync, readFileSync } from 'node:fs';
 import { build } from 'esbuild';
 
 // 0. 清空产物目录
@@ -31,7 +31,14 @@ execSync(`"${localTsc}" -p tsconfig.json`, { stdio: 'inherit' });
 //    `@deepseek-ai/dsh-client-ui-primitives` 同样必须保持 external：官方图标集是
 //    宿主 web 端静态模块表的常驻成员（与 dsh-client-locale 等官方 client 包同款
 //    做法），打进包会整套复制图标；由 package.json 的 `dsh.client.inject` 声明注入。
+// client 侧所有身份标识（工厂注册 id / 槽位 key / 条目 id / settings 命名空间）
+// 必须等于包名。注入包名而不是在源码里再写一遍字面量：11-16 改名时源码字面量
+// 留在旧名，web boot 以新包名加载、工厂注册旧 id，invalidate 清不掉 →
+// duplicate factory registration → client entry 不激活。
+const pkgName = JSON.parse(readFileSync('package.json', 'utf8')).name;
+
 const result = await build({
+  define: { __WAKATIME_PLUGIN_ID__: JSON.stringify(pkgName) },
   entryPoints: ['src/client/index.ts'],
   bundle: true,
   format: 'cjs',
@@ -46,7 +53,7 @@ const result = await build({
 
 const body = result.outputFiles[0].text;
 const wrapped = `window.__ModuleLoader__.load({
-	id: "dsh-wakatime",
+	id: ${JSON.stringify(pkgName)},
 	factory: (require) => {
 		var module = { exports: {} };
 		var exports = module.exports;

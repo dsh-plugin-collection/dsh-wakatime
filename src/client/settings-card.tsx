@@ -20,6 +20,7 @@
  * @module dsh-wakatime/client/settings-card
  */
 
+import { SHOW_SETTINGS_KEY } from './plugin-id.ts';
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import {
   MenuSurface,
@@ -130,7 +131,7 @@ function ToggleRow({ def, state, disabled, t, onToggle }: {
 
 /** 「在设置中显示」开关：纯本地视图偏好（localStorage），不进设置文档、不参与保存。 */
 function ShowInSectionToggle({ t }: { t: WkStrings }): ReactElement {
-  const SHOW_SETTINGS_KEY = 'dsh-wakatime:show-settings-section';
+  // SHOW_SETTINGS_KEY 集中在 plugin-id.ts（保留旧存储键以延续用户偏好）。
   const [showSettings, setShowSettings] = useState<boolean>(() => {
     if (typeof localStorage === 'undefined') return false;
     return localStorage.getItem(SHOW_SETTINGS_KEY) === 'true';

@@ -12,7 +12,8 @@
  * @module dsh-wakatime/client/styles
  */
 
-export const STYLE_ID = 'dsh-wakatime-styles';
+import { PLUGIN_ID } from './plugin-id.ts';
+export const STYLE_ID = `${PLUGIN_ID}-styles`;
 
 const COMPONENTS = [
   '/* ==================== Section 分组 ==================== */',
@@ -105,7 +106,7 @@ export function injectStyles(): () => void {
     return () => undefined;
   }
   const tag = document.createElement('style');
-  tag.dataset.plugin = 'dsh-wakatime';
+  tag.dataset.plugin = PLUGIN_ID;
   tag.dataset.pluginCss = STYLE_ID;
   tag.textContent = COMPONENTS;
   document.head.appendChild(tag);
