@@ -2,6 +2,58 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。条目按*影响面*排序，不按提交顺序。
 
+## [1.2.0] — 2026-11-20
+
+### 修复
+
+- **Operating Systems 面板显示 `Unknown OS`**：UA 缺官方模板里的括号段。WakaTime 从
+  `User-Agent` 解析 OS（`userAgentSystemEnd` 找不到 `(` 就返回 -1），旧 UA
+  `dsh/1.0.0 dsh-wakatime/1.0.0` 没有括号，于是整段统计落到 `Unknown OS`。现按官方
+  模板 `wakatime/<ver> (<OS>-<core>-<platform>) …` 生成，OS 名用**小写**、arch 用
+  `x86_64` / `aarch64`——取值来自本账号 `user_agents` 端点里 50 条官方 CLI 的真实样本，
+  大小写不一致会多出一个新条目而不是并入已有归类。
+- **Models 面板一直空白**：WakaTime 的心跳结构里**没有** `ai_model` 字段（官方
+  `pkg/heartbeat/heartbeat.go` 的 AI 字段只有 `ai_line_changes` / `ai_cached_input_tokens`
+  / `ai_session` / `ai_subscription_plan` / `ai_input_tokens` / `ai_output_tokens` /
+  `ai_prompt_length`），模型归属是服务端从 UA 解析出来的。旧 UA 里没有任何模型 token，
+  所以面板永远空。现从宿主消息的 `message.source.model`（`ModelMessageSource`）读取模型 id，
+  按官方 `aiModelUserAgentToken` 规则归一化后写进 UA：
+  `deepseek-v4.1-flash-eco` → `deepseek/4.1-flash-eco`、`gpt-4o` → `gpt/4o`。
+  识别不出 family 的（无版本号的 `dsh-opendesign-go`、`deepseek-chat`）该段直接省略，
+  不发无效 token。
+- **`ai_line_changes` 从未上报，发出的是不存在的字段**：旧实现给 write / edit 心跳塞
+  `line_additions` / `line_deletions`，而官方心跳结构里没有这两个字段，服务端直接忽略，
+  WakaTime 的 AI 行数统计因此一直缺数据。现改为官方字段 `ai_line_changes`
+  （= 增行 + 删行），`lines` 保留。
+- **`user_agent` 只发在 HTTP 头，没写进心跳**：批量上报时一个头无法区分不同会话、不同
+  模型的条目。官方心跳结构有 `user_agent` JSON 字段，现逐条写入（`enqueue()` 统一打戳，
+  三个构造点都不会漏），HTTP 头跟随本批第一条的 UA。
+
+### 变更
+
+- **UA 里的版本不再手写**：旧的 `dsh/1.0.0 dsh-wakatime/1.0.0` 是硬编码字面量，包已经
+  发到 1.1.0 而它停在 1.0.0。现由 `build.mjs` 在 tsc 之后把 `package.json` 的版本注入
+  `lib/user-agent.js`，宿主版本则从宿主进程入口路径探测（插件直接 `require`
+  `@deepseek-ai/dsh/package.json` 会 `MODULE_NOT_FOUND`，能解析到的 `dsh-session` 只是
+  插件自己的 devDependency，版本是错的）。两者都取不到时对应段省略，不填假版本。
+- 新增 `src/user-agent.ts`（UA 构造 + 模型 token 归一化 + 宿主版本探测），
+  178 个测试（新增 8 个：token 归一化、括号段形状、OS/arch 词汇、无效模型省略、
+  宿主版本缺失回退、模型身份透传、逐条 UA 打戳）。
+
+### 已验证
+
+- 真实 `heartbeats.bulk` 上报返回 `201`，该 UA 已出现在 `user_agents` 端点（54 条中的
+  最新一条）。
+- 本地 mock 端点抓包确认：每条心跳的 `user_agent` 逐条存在，HTTP 头与载荷一致，
+  `line_additions` / `line_deletions` 已消失，`ai_line_changes` 出现在 write 心跳上。
+
+### 仍无法本地验证
+
+- 服务端解析 UA 的代码不开源，且 `user_agents` 之外的面板读端点对本插件 key 返回 403 /
+  404（`operating_systems`、`editors`、`machine_names`、`ai_models` 均不可读），所以
+  **面板是否真的点亮只能以实际面板为准**。本版只保证 UA 形状与官方 CLI 一致。
+
+
 ## [1.1.0] — 2026-11-20
 
 ### 已知问题

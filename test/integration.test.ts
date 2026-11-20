@@ -383,6 +383,47 @@ describe('Integration Tests', () => {
       expect(heartbeat.ai_cached_input_tokens).not.toBe(78729 + 512);
     });
 
+    it('carries the model identity from the assistant message into user_agent', async () => {
+      // WakaTime 没有 `ai_model` 心跳字段：Models 面板靠解析 UA 里的模型 token。
+      // 宿主把模型身份放在 message.source（ModelMessageSource）里，心跳层必须
+      // 把它读出来交给 UA 构造，否则面板永远是空的。
+      const mockSession = { id: 'model-session', header: { cwd: process.cwd() } };
+      const tracker = new FileTracker(mockSession as any, { project_name: 'model-test', language: '' });
+
+      await tracker.trackAssistantMessage({
+        type: 'assistant/message',
+        time: Date.now(),
+        data: {
+          turn: 1, step: 1,
+          message: { content: 'ok', source: { kind: 'model', provider: 'dsh', model: 'deepseek-v4.1-flash-eco' } },
+          usage: { inputTokens: 100, outputTokens: 20 },
+        },
+      } as any);
+
+      const [heartbeat] = tracker.getPending();
+      expect(typeof heartbeat.user_agent).toBe('string');
+      expect(heartbeat.user_agent).toContain('deepseek/4.1-flash-eco');
+      // 官方模板硬要求：wakatime/ 前缀 + (OS-...) 括号段，否则 OS 面板是 Unknown
+      expect(heartbeat.user_agent!.startsWith('wakatime/')).toBe(true);
+      expect(heartbeat.user_agent).toContain('(linux-');
+    });
+
+    it('tags every heartbeat with user_agent, including tool calls that carry no model', async () => {
+      const mockSession = { id: 'ua-session', header: { cwd: process.cwd() } };
+      const tracker = new FileTracker(mockSession as any, { project_name: 'ua-test', language: '' });
+
+      // tool call 事件不携带模型身份——UA 仍必须存在，否则该条心跳在
+      // Editors / Operating Systems 面板里归不了类。
+      await tracker.trackToolCall({
+        type: 'tool/call',
+        data: { turn: 1, step: 1, callId: 'c-ua', name: 'read', arguments: JSON.stringify({ file_path: '/repo/x.ts' }) },
+      } as any);
+      for (const hb of tracker.getPending()) {
+        expect(typeof hb.user_agent).toBe('string');
+        expect(hb.user_agent!.startsWith('wakatime/')).toBe(true);
+      }
+    });
+
     it('omits the cached field when there is no cache read', async () => {
       const mockSession = { id: 'token-session-2', header: { cwd: process.cwd() } };
       const tracker = new FileTracker(mockSession as any, { project_name: 'token-test', language: '' });

@@ -12,8 +12,18 @@ export interface WakaTimeHeartbeat {
   language?: string;
   dependencies?: string[];
   lines?: number;
-  line_additions?: number;
-  line_deletions?: number;
+  /**
+   * 由 GenAI 增删的行数（官方字段 `ai_line_changes`）。
+   *
+   * 与 `lines` 语义不同：`lines` 是「文件共有多少行」，`ai_line_changes` 是
+   * 「这次 AI 改动增删了多少行」。WakaTime 的 AI 行数统计只认后者。
+   * 早前本插件发的是自造的 `line_additions` / `line_deletions`——官方心跳结构里
+   * **不存在**这两个字段（`wakatime-cli` 的 Heartbeat 只有 `ai_line_changes`
+   * 与 `human_line_changes`），服务端直接忽略，等于白算。
+   */
+  ai_line_changes?: number;
+  /** 由人工键入增删的行数（官方字段 `human_line_changes`；本插件不采集，故不发）。 */
+  human_line_changes?: number;
   is_write?: boolean;
   /** GenAI 指标（WakaTime 心跳可选字段）：本次会话 id */
   ai_session?: string;
@@ -32,6 +42,15 @@ export interface WakaTimeHeartbeat {
   ai_output_tokens?: number;
   /** 距上一心跳的用户提示字符数 */
   ai_prompt_length?: number;
+  /**
+   * 本心跳所属的 User-Agent（官方心跳结构里有这个 JSON 字段）。
+   *
+   * 为什么必须逐条带：WakaTime 的 **Editors / Operating Systems / Models** 三个
+   * 面板都从 UA 解析（服务端解析代码不开源，行为以官方 CLI 为参照）。批量上报时
+   * HTTP 头只有一个 UA，服务端是否会把它落到数组里每条心跳上并无保证；显式逐条
+   * 带上才是确定行为。构造见 `user-agent.ts`。
+   */
+  user_agent?: string;
 }
 
 /**

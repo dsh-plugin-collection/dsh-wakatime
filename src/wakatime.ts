@@ -1,4 +1,5 @@
 import { WakaTimeHeartbeat, WakaTimeError, WakaTimeAuthError, WakaTimeRateLimitError } from './types.js';
+import { currentUserAgent } from './user-agent.js';
 import type { Socket } from 'node:net';
 
 /** 默认请求超时：挂起的服务端不能让 flush 永不返回、并发请求越积越多。 */
@@ -282,7 +283,9 @@ export class WakaTimeClient {
   constructor(config: WakaTimeClientConfig) {
     this.apiKey = config.api_key;
     this.baseUrl = `${config.api_url}/api/v1`;
-    this.userAgent = `dsh/1.0.0 dsh-wakatime/1.0.0`;
+    // HTTP 头只是兜底：真正的归属信息逐条写在心跳的 `user_agent` 字段里
+    // （批量上报时一个头无法区分不同会话/不同模型的条目）。构造规则见 user-agent.ts。
+    this.userAgent = currentUserAgent();
     const resolved = resolveProxy(process.env, config.cfg_proxy, config.proxy_url);
     this.proxyUrl = resolved.proxy;
     this.noProxy = usableNoProxy(config.no_proxy) ?? process.env.NO_PROXY ?? '';
@@ -366,11 +369,15 @@ export class WakaTimeClient {
 
     const url = `${this.baseUrl}/users/current/heartbeats.bulk`;
     const body = JSON.stringify(payloads);
+    // HTTP 头跟着本批心跳走：client 是插件级单例，构造时还拿不到模型身份，
+    // 而 UA 里的模型段是逐会话变化的。优先取本批第一条的 UA（它们同源），
+    // 都缺才回退构造时的兜底值。
+    const batchUserAgent = payloads.find((hb) => typeof hb.user_agent === 'string' && hb.user_agent !== '')?.user_agent;
 
     let response: Response;
     const targetHost = new URL(url).hostname;
     if (shouldUseProxy(this.proxyUrl, targetHost, this.noProxy)) {
-      response = await this.fetchWithProxy(url, body);
+      response = await this.fetchWithProxy(url, body, batchUserAgent ?? this.userAgent);
     } else {
       try {
         response = await fetch(url, {
@@ -378,7 +385,7 @@ export class WakaTimeClient {
           headers: {
             'Authorization': `Basic ${btoa(this.apiKey + ':')}`,
             'Content-Type': 'application/json',
-            'User-Agent': this.userAgent,
+            'User-Agent': batchUserAgent ?? this.userAgent,
           },
           body,
           signal: AbortSignal.timeout(this.requestTimeoutMs),
@@ -467,7 +474,7 @@ export class WakaTimeClient {
    * @param url - 目标绝对地址。
    * @param body - 请求体（心跳批量上报的 JSON）。
    */
-  private async fetchWithProxy(url: string, body: string): Promise<Response> {
+  private async fetchWithProxy(url: string, body: string, userAgent: string): Promise<Response> {
     const parsed = new URL(url);
     const proxyParsed = new URL(this.proxyUrl!);
 
@@ -538,7 +545,7 @@ export class WakaTimeClient {
             'Authorization': `Basic ${btoa(this.apiKey + ':')}`,
             'Content-Type': 'application/json',
             'Content-Length': String(Buffer.byteLength(body)),
-            'User-Agent': this.userAgent,
+            'User-Agent': userAgent,
             'Host': parsed.host,
           },
           socket,

@@ -6,7 +6,7 @@
 
 **中文** | [English](./README.en.md)
 
-[![version](https://img.shields.io/badge/version-1.1.0-0EA5E9)](https://github.com/dsh-plugin-collection/dsh-wakatime)
+[![version](https://img.shields.io/badge/version-1.2.0-0EA5E9)](https://github.com/dsh-plugin-collection/dsh-wakatime)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![DSH](https://img.shields.io/badge/DeepSeek%20Harness-0.2.2--rc.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 
@@ -39,7 +39,11 @@ DSH 里的活动原本不会出现在 WakaTime 上：[WakaTime](https://wakatime
 | **Projects** | 每次心跳的 `project`：自动从 git / `package.json` / 目录名推断 |
 | **Categories** | 工具调用映射（见[类别映射](#类别映射)）——`coding` / `browsing` / `researching` 等 |
 | **Languages** | 按文件扩展名推断 |
-| **Editors** | 由心跳的 `User-Agent`（`dsh/1.0.0 dsh-wakatime/1.0.0`）推出，所以"在 DSH 里干活"在面板上单独成了一类 |
+| **Editors** | 由心跳的 `User-Agent` 推出，所以「在 DSH 里干活」在面板上单独成了一类 |
+| **Operating Systems** | 同样来自 `User-Agent` 的括号段 `(linux-<内核>-<arch>)` |
+| **Models** | 同样来自 `User-Agent` 里的模型 token（如 `deepseek/4.1-flash-eco`）——WakaTime **没有** `ai_model` 心跳字段，这个面板只认 UA |
+
+> **为什么 UA 要照官方模板拼**：Editors / Operating Systems / Models 三个面板都从 `User-Agent` 解析。本插件按 `wakatime-cli` 的模板 `wakatime/<ver> (<OS>-<core>-<platform>) <runtime> <model?> <editor>` 生成；模型取自宿主消息的 `message.source.model`，并按官方的 `aiModelUserAgentToken` 规则归一化。一条实测样本：`wakatime/1.2.0 (linux-6.18.58-x86_64) node/24.22.0 deepseek/4.1-flash-eco dsh/0.2.2-rc.5`。模型识别不出时该段省略，不会把 `dsh-opendesign-go` 这类没有版本号的 id 硬塞进去污染 `user_agents` 表。
 
 ## 安装
 
@@ -157,6 +161,7 @@ wc -l ~/.dsh/wakatime/heartbeat-cache.jsonl
 - **DSH 侧的 AI token 口径与 IDE 不同**：宿主给的是「未命中 + 缓存命中」两个互斥分量，插件分字段上报，不与 IDE 插件的数字直接可比；
 - **历史数据不可回溯**：`entity` / `category` 的形态一旦改变，按这两个维度做跨版本对比会断裂；
 - **读端点不可用**：WakaTime 自 2026-10 起对插件 key 封锁读端点（详见[开发](#开发)），因此插件无法回读自己的数据做校验。
+- **Models / Operating Systems 面板的显示效果无法本地验证**：服务端解析 UA 的代码不开源。插件只保证「UA 形状与官方 CLI 产出一致」（`user_agents` 写端点已实测确认该 UA 落库），面板是否按预期归类需以实际面板为准。模型名里**没有版本号**的（如 `dsh-opendesign-go`、`deepseek-chat`）按官方规则识别不出 family，这类会话不会出现在 Models 面板。
 
 ## 开发
 

@@ -3,6 +3,7 @@ import { classifyShellCommand } from './category.js';
 import { resolveLanguage } from './language.js';
 import { resolveProject, resolveBranch, resolveProjectRootCount, resolveDependencies } from './project.js';
 import { calculateWriteDiff, calculateEditDiff } from './diff.js';
+import { currentUserAgent } from './user-agent.js';
 import type { Session } from '@deepseek-ai/dsh-session';
 
 // DSH session event types (from @deepseek-ai/dsh-session)
@@ -58,6 +59,17 @@ interface AssistantMessageEvent {
     step: number;
     message: {
       content: string;
+      /**
+       * 消息来源。宿主 `dsh-llm` 的 `ModelMessageSource` 形状为
+       * `{ kind: 'model', provider, model }`——模型 id 就在这里。WakaTime 没有
+       * `ai_model` 心跳字段，Models 面板靠解析 UA 里的模型 token 得到归属，
+       * 归一化见 `user-agent.ts` 的 aiModelToken。
+       */
+      source?: {
+        kind?: string;
+        provider?: string;
+        model?: string;
+      };
     };
     usage?: TokenUsageLike;
   };
@@ -88,6 +100,14 @@ export class FileTracker {
   private inflight: Set<Promise<void>> = new Set();
   /** 最近一条用户消息的字符数，随下一条 assistant 心跳作为 ai_prompt_length 上报。 */
   private lastPromptLength?: number;
+  /**
+   * 最近一次模型调用所用的模型 id（`message.source.model`），用于 UA 里的模型 token。
+   *
+   * 为什么缓存而不是每条去读：user message / tool call 心跳也需要 UA，而那些事件
+   * 不携带模型身份；缓存最近一次即可近似「当前会话正在用的模型」。模型切换后
+   * 下一条 assistant 心跳即更新。
+   */
+  private lastModelId?: string;
 
   constructor(session: Session, config: TrackerConfig) {
     this.session = session;
@@ -164,8 +184,10 @@ export class FileTracker {
       const diff = await this.calculateDiff(name, args, entity);
       if (diff) {
         heartbeat.lines = diff.lines;
-        heartbeat.line_additions = diff.lineAdditions;
-        heartbeat.line_deletions = diff.lineDeletions;
+        // 官方字段是 `ai_line_changes`（GenAI 增删的行数），不是自造的
+        // `line_additions` / `line_deletions`——后者在官方心跳结构里不存在，
+        // 服务端直接忽略，WakaTime 的 AI 行数统计因此一直是空的。
+        heartbeat.ai_line_changes = diff.lineAdditions + diff.lineDeletions;
       }
     }
 
@@ -173,7 +195,19 @@ export class FileTracker {
     // 去重窗口一致）。缓冲键必须带上 category：shell 心跳现在共用同一个 entity
     // （应用名），若只按 entity 作键，5 秒内先后跑的 `pnpm test` 与 `ls` 会互相
     // 覆盖，最后只剩后一条的类别——一次跑测试的痕迹会被一条浏览抹掉。
-    const pendingKey = `${entity}\u0000${heartbeat.category ?? ''}`;
+    this.enqueue(heartbeat);
+  }
+
+  /**
+   * 入队（含 5 秒去重窗口），并在此处统一贴 `user_agent`。
+   *
+   * 为什么集中打戳：三类心跳（write 工具、用户消息、assistant 消息）都有自己的
+   * 构造点，逐个贴容易漏一个；而 `user_agent` 必须**每条**都带——WakaTime 的
+   * Editors / Operating Systems / Models 三个面板都从它解析。
+   */
+  private enqueue(heartbeat: WakaTimeHeartbeat): void {
+    heartbeat.user_agent = currentUserAgent(this.lastModelId);
+    const pendingKey = `${heartbeat.entity}\u0000${heartbeat.category ?? ''}`;
     const existing = this.pending.get(pendingKey);
     if (existing && (heartbeat.time - existing.time) < 5) {
       Object.assign(existing, heartbeat);
@@ -213,10 +247,14 @@ export class FileTracker {
       is_write: false,
     };
     if (project !== undefined) heartbeat.project = project;
-    this.pending.set(`user-${time}`, heartbeat);
+    this.enqueue(heartbeat);
   }
 
   private async trackAssistantMessageInner(event: AssistantMessageEvent): Promise<void> {
+    // 模型身份先记下：user message / tool call 心跳不携带模型，靠这个缓存近似
+    // 「当前会话正在用的模型」；切换模型后下一条 assistant 心跳即更新。
+    const modelId = event?.data?.message?.source?.model;
+    if (typeof modelId === 'string' && modelId !== '') this.lastModelId = modelId;
     const usage = event?.data?.usage;
     const time = this.eventTime(event);
     const project = await this.legalProject();
@@ -247,7 +285,7 @@ export class FileTracker {
       heartbeat.ai_prompt_length = this.lastPromptLength;
       this.lastPromptLength = undefined;
     }
-    this.pending.set(`assistant-${time}`, heartbeat);
+    this.enqueue(heartbeat);
   }
 
   getPending(): WakaTimeHeartbeat[] {

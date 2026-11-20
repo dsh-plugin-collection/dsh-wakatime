@@ -27,6 +27,24 @@ if (!existsSync(localTsc)) {
 }
 execSync(`"${localTsc}" -p tsconfig.json`, { stdio: 'inherit' });
 
+// 1.5 host 端版本常量注入
+// tsc 把 `declare const __WAKATIME_PLUGIN_VERSION__` 原样留在产物里，运行时直接
+// 引用会 ReferenceError。这里在编译后把语句替换成字面量：源码不必手写版本号
+// （UA 曾长期停在 1.0.0，与 package.json 脱钩）。
+const pkgVersion = JSON.parse(readFileSync('package.json', 'utf8')).version;
+const userAgentFile = 'lib/user-agent.js';
+if (!existsSync(userAgentFile)) {
+  console.error(`构建失败：缺少 ${userAgentFile}（tsc 未产出 user-agent 模块）。`);
+  process.exit(1);
+}
+const injectDecl = 'const INJECTED_PLUGIN_VERSION = undefined;';
+const source = readFileSync(userAgentFile, 'utf8');
+if (!source.includes(injectDecl)) {
+  console.error(`构建失败：${userAgentFile} 里找不到版本注入点（构建脚本与源码约定不一致）。`);
+  process.exit(1);
+}
+writeFileSync(userAgentFile, source.replace(injectDecl, `const INJECTED_PLUGIN_VERSION = ${JSON.stringify(pkgVersion)};`));
+
 // 2. client 端：esbuild 打包（type-only imports 剥离；react 从宿主运行时解析）
 //    `@deepseek-ai/dsh-client-ui-primitives` 同样必须保持 external：官方图标集是
 //    宿主 web 端静态模块表的常驻成员（与 dsh-client-locale 等官方 client 包同款
