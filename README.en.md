@@ -1,12 +1,12 @@
 <div align="center">
 
-<img src="assets/logo.svg" width="128" alt="dsh-wakatime-plugin logo"/>
+<img src="assets/logo.svg" width="128" alt="dsh-wakatime logo"/>
 
-# dsh-wakatime-plugin — WakaTime heartbeats for DSH
+# dsh-wakatime — WakaTime heartbeats for DSH
 
 [中文](./README.md) | **English**
 
-[![version](https://img.shields.io/badge/version-1.0.0-0EA5E9)](https://github.com/dsh-plugin-collection/dsh-wakatime-plugin)
+[![version](https://img.shields.io/badge/version-1.0.0-0EA5E9)](https://github.com/dsh-plugin-collection/dsh-wakatime)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![DSH](https://img.shields.io/badge/DeepSeek%20Harness-0.2.2--rc.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 
@@ -44,7 +44,7 @@ All four panels are fed by this plugin:
 ## Install
 
 ```bash
-dsh plugin --profile web add dsh-wakatime-plugin
+dsh plugin --profile web add dsh-wakatime
 ```
 
 **Restart `dsh web`** afterwards. Then open **Settings → WakaTime** and paste your [API key](https://wakatime.com/settings/api-key).
@@ -55,19 +55,19 @@ dsh plugin --profile web add dsh-wakatime-plugin
 From GitHub:
 
 ```bash
-dsh plugin --profile web add github:dsh-plugin-collection/dsh-wakatime-plugin
+dsh plugin --profile web add github:dsh-plugin-collection/dsh-wakatime
 ```
 
 Local development (from the plugin directory):
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-wakatime-plugin
+dsh plugin --profile web add /path/to/dsh-wakatime
 ```
 
 From source:
 
 ```bash
-cd dsh-wakatime-plugin && pnpm install && pnpm build
+cd dsh-wakatime && pnpm install && pnpm build
 ```
 
 Internal distribution: also mirrored on a private Gitea for internal use — ask the maintainer for the URL and pin a commit:

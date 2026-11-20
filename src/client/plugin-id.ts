@@ -13,7 +13,7 @@
  * `duplicate factory registration` → 整个 client entry 不激活。
  * 注入包名后这组标识不可能再各自漂移。
  *
- * @module dsh-wakatime-plugin/client/plugin-id
+ * @module dsh-wakatime/client/plugin-id
  */
 
 declare const __WAKATIME_PLUGIN_ID__: string | undefined;
@@ -22,7 +22,7 @@ declare const __WAKATIME_PLUGIN_ID__: string | undefined;
 export const PLUGIN_ID: string =
   typeof __WAKATIME_PLUGIN_ID__ === 'string' && __WAKATIME_PLUGIN_ID__ !== ''
     ? __WAKATIME_PLUGIN_ID__
-    : 'dsh-wakatime-plugin';
+    : 'dsh-wakatime';
 
 /**
  * 「在设置中显示」开关的 localStorage 键。
