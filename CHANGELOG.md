@@ -2,6 +2,31 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。条目按*影响面*排序，不按提交顺序。
 
+## [1.2.3] — 2026-11-20
+
+### 修复
+
+- **Machines 面板一直是 `Unknown Hostname`**：心跳 JSON 结构里**没有**
+  `machine_name` 字段（`wakatime-cli` 的 `heartbeat.go` 零命中），机器名靠 HTTP 头
+  `X-Machine-Name` 传（官方 `pkg/api/option.go` 的 `WithHostname`，值经
+  `url.QueryEscape`）。此前本插件一个头都没发，所以面板 100% 落在
+  `Unknown Hostname`。现在两个发送分支（直连 / 代理隧道）都会带上这个头；
+  主机名取不到就不发（让服务端继续显示 Unknown，而不是发空串）。
+
+### 验证
+
+实测三组对照，读 `statusbar/today` 的 `machines` 分项：
+
+| 发送方式 | Machines 面板结果 |
+|---|---|
+| 什么都不发（旧行为） | `Unknown Hostname` 100% |
+| 只发 `X-Machine-Name: DESKTOP-VPONNL6` | ✅ 出现独立条目 `DESKTOP-VPONNL6 1.4%` |
+| JSON 里塞 `machine_name` | ❌ 无效（字段不被接收） |
+
+（上面「只发头」那行同时证明了头是有效通道。JSON 里带 `machine_name` 的那组
+也顺带解释了为什么不能照搬别的插件那样把它塞进载荷——服务端直接忽略。）
+
+
 ## [1.2.2] — 2026-11-20
 
 ### 修复

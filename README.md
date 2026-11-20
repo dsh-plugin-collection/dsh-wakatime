@@ -6,7 +6,7 @@
 
 **中文** | [English](./README.en.md)
 
-[![version](https://img.shields.io/badge/version-1.2.2-0EA5E9)](https://github.com/dsh-plugin-collection/dsh-wakatime)
+[![version](https://img.shields.io/badge/version-1.2.3-0EA5E9)](https://github.com/dsh-plugin-collection/dsh-wakatime)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![DSH](https://img.shields.io/badge/DeepSeek%20Harness-0.2.2--rc.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 
@@ -42,6 +42,7 @@ DSH 里的活动原本不会出现在 WakaTime 上：[WakaTime](https://wakatime
 | **Editors** | 由心跳的 `User-Agent` 推出，所以「在 DSH 里干活」在面板上单独成了一类 |
 | **Operating Systems** | 同样来自 `User-Agent` 的括号段 `(linux-<内核>-<arch>)`（实测服务端对括号段做子串识别，不依赖 `wakatime/` 头） |
 | **Models** | 同样来自 `User-Agent` 里的模型 token（如 `deepseek/4.1-flash-eco`）——WakaTime **没有** `ai_model` 心跳字段，这个面板只认 UA |
+| **Machines** | HTTP 头 `X-Machine-Name`（值 URL 转义）。心跳 JSON 里**没有** `machine_name` 字段，这是官方 CLI 用的同一个通道 |
 
 > **为什么 UA 的模型 token 在最前面（而不是照抄官方模板）**
 >
@@ -52,8 +53,8 @@ DSH 里的活动原本不会出现在 WakaTime 上：[WakaTime](https://wakatime
 > | UA | ai_model | ai_model_version | editor |
 > |---|---|---|---|
 > | `wakatime/1.2.1 (…) node/… deepseek/… dsh/…` | ❌ `Wakatime` | `1.2.1` | None |
-> | `deepseek/4.1-flash-eco dsh/0.2.2-rc.5 (linux-…) node/… dsh-wakatime/1.2.2` | ✅ `DeepSeek` | `4.1-flash-eco` | ✅ `Dsh` |
-> | `dsh/0.2.2-rc.5 (linux-…) node/… dsh-wakatime/1.2.2`（模型识别不出时） | ✅ `None` | None | ✅ `Dsh` |
+> | `deepseek/4.1-flash-eco dsh/0.2.2-rc.5 (linux-…) node/… dsh-wakatime/1.2.3` | ✅ `DeepSeek` | `4.1-flash-eco` | ✅ `Dsh` |
+> | `dsh/0.2.2-rc.5 (linux-…) node/… dsh-wakatime/1.2.3`（模型识别不出时） | ✅ `None` | None | ✅ `Dsh` |
 >
 > 代价是没有 `wakatime/` 头。实测括号段仍被服务端识别（它对 `(linux-…-x86_64)` 做子串匹配），`editor` 则靠在末尾放 `dsh-wakatime/<ver>` 才回落成 `Dsh`——末尾那个 token **不能省**。OS 名用小写、arch 用 `x86_64` / `aarch64`，取自本账号里官方 CLI 的 50 条 UA 样本。
 

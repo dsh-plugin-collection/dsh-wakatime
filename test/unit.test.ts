@@ -970,3 +970,36 @@ describe('ESM 运行时守卫', () => {
     expect(ua).toContain('dsh/');
   });
 });
+
+describe('X-Machine-Name（Machines 面板归属）', () => {
+  // 官方 CLI 在 pkg/api/option.go 的 WithHostname 里做这件事：把 hostname
+  // URL 转义后塞进 X-Machine-Name 头。心跳 JSON 结构里**没有** machine_name
+  // 字段（heartbeat.go 零命中），所以这是唯一通道；不发这个头，Machines
+  // 面板永远是 Unknown Hostname。
+  it('请求头里带 URL 转义后的主机名', async () => {
+    const { WakaTimeClient } = await import('../src/wakatime.js');
+    const client = new WakaTimeClient({
+      api_key: 'k', api_url: 'https://wakatime.com',
+      cfg_proxy: '', proxy_url: '',
+    });
+    const header = (client as any).machineHeader();
+    // 主机名可能取不到（极少数沙箱）——那时必须是空对象，不能是空字符串头
+    if (Object.keys(header).length === 0) {
+      expect((client as any).machineName).toBe('');
+      return;
+    }
+    expect(header['X-Machine-Name']).toBeTruthy();
+    // 必须是转义过的：非 ASCII 主机名不转义会破坏请求头
+    expect(decodeURIComponent(header['X-Machine-Name'])).toBe((client as any).machineName);
+  });
+
+  it('主机名取不到时不发这个头（而不是发空串）', async () => {
+    const { WakaTimeClient } = await import('../src/wakatime.js');
+    const client = new WakaTimeClient({
+      api_key: 'k', api_url: 'https://wakatime.com',
+      cfg_proxy: '', proxy_url: '',
+    });
+    (client as any).machineName = '';
+    expect((client as any).machineHeader()).toEqual({});
+  });
+});

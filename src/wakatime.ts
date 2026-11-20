@@ -1,9 +1,27 @@
 import { WakaTimeHeartbeat, WakaTimeError, WakaTimeAuthError, WakaTimeRateLimitError } from './types.js';
 import { currentUserAgent } from './user-agent.js';
+import { hostname as osHostname } from 'node:os';
 import type { Socket } from 'node:net';
 
 /** 默认请求超时：挂起的服务端不能让 flush 永不返回、并发请求越积越多。 */
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+
+/**
+ * 取本机名，供 `X-Machine-Name` 头使用。
+ *
+ * 官方 CLI 在 `pkg/api/option.go` 的 `WithHostname` 里做同样的事：
+ * 把 hostname URL 转义后塞进 `X-Machine-Name` 头。**心跳 JSON 结构里没有
+ * machine_name 字段**（`heartbeat.go` 里零命中），所以这是唯一的通道。
+ * 取不到就返回空串——调用方据此不发这个头，让服务端继续显示 Unknown
+ * Hostname，而不是发一个空字符串上去。
+ */
+function safeHostname(): string {
+  try {
+    return osHostname() ?? '';
+  } catch {
+    return '';
+  }
+}
 
 /**
  * 单条心跳被服务端拒绝的记录。
@@ -268,6 +286,8 @@ export class WakaTimeClient {
   private apiKey: string;
   private baseUrl: string;
   private userAgent: string;
+  /** 本机名（Machines 面板的归属来源，经 `X-Machine-Name` 头发送）。 */
+  private machineName: string;
   private retryAfter: number = 0;
   private authFailRetryAfter: number = 0;
   private proxyUrl: string | null;
@@ -286,6 +306,10 @@ export class WakaTimeClient {
     // HTTP 头只是兜底：真正的归属信息逐条写在心跳的 `user_agent` 字段里
     // （批量上报时一个头无法区分不同会话/不同模型的条目）。构造规则见 user-agent.ts。
     this.userAgent = currentUserAgent();
+    // 机器名走 HTTP 头 `X-Machine-Name`（官方 CLI 的 WithHostname 就是这么做的），
+    // 心跳结构里没有 machine_name 字段。没有这个头，Machines 面板永远是
+    // `Unknown Hostname`。取不到就不发，让服务端继续显示 Unknown 而不是发空串。
+    this.machineName = safeHostname();
     const resolved = resolveProxy(process.env, config.cfg_proxy, config.proxy_url);
     this.proxyUrl = resolved.proxy;
     this.noProxy = usableNoProxy(config.no_proxy) ?? process.env.NO_PROXY ?? '';
@@ -344,6 +368,17 @@ export class WakaTimeClient {
     return this.proxyUrl === null ? `直连（来源：${sourceLabel}）` : `经代理 ${maskProxyUrl(this.proxyUrl)}（来源：${sourceLabel}）`;
   }
 
+  /**
+   * `X-Machine-Name` 头；机器名取不到时返回空对象（不发这个头）。
+   *
+   * 值必须 URL 转义：官方 CLI 用 `url.QueryEscape`，主机名里的非 ASCII
+   * 字符若不转义会直接破坏请求头。
+   */
+  private machineHeader(): Record<string, string> {
+    if (this.machineName === '') return {};
+    return { 'X-Machine-Name': encodeURIComponent(this.machineName) };
+  }
+
   async sendHeartbeat(payload: WakaTimeHeartbeat): Promise<HeartbeatSendResult> {
     return this.sendHeartbeats([payload]);
   }
@@ -386,6 +421,7 @@ export class WakaTimeClient {
             'Authorization': `Basic ${btoa(this.apiKey + ':')}`,
             'Content-Type': 'application/json',
             'User-Agent': batchUserAgent ?? this.userAgent,
+            ...this.machineHeader(),
           },
           body,
           signal: AbortSignal.timeout(this.requestTimeoutMs),
@@ -546,6 +582,7 @@ export class WakaTimeClient {
             'Content-Type': 'application/json',
             'Content-Length': String(Buffer.byteLength(body)),
             'User-Agent': userAgent,
+            ...this.machineHeader(),
             'Host': parsed.host,
           },
           socket,

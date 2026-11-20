@@ -6,7 +6,7 @@
 
 [中文](./README.md) | **English**
 
-[![version](https://img.shields.io/badge/version-1.2.2-0EA5E9)](https://github.com/dsh-plugin-collection/dsh-wakatime)
+[![version](https://img.shields.io/badge/version-1.2.3-0EA5E9)](https://github.com/dsh-plugin-collection/dsh-wakatime)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![DSH](https://img.shields.io/badge/DeepSeek%20Harness-0.2.2--rc.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 
@@ -42,6 +42,7 @@ All four panels are fed by this plugin:
 | **Editors** | Derived from the heartbeat `User-Agent`, so "working in DSH" shows up as its own editor |
 | **Operating Systems** | Also from the `User-Agent` parenthesised section `(linux-<kernel>-<arch>)` |
 | **Models** | Also from the model token inside `User-Agent` (e.g. `deepseek/4.1-flash-eco`) — WakaTime has **no** `ai_model` heartbeat field; this panel reads the UA only |
+| **Machines** | The `X-Machine-Name` HTTP header (URL-encoded value). The heartbeat JSON has **no** `machine_name` field — this is the same channel the official CLI uses |
 
 > **Why the model token comes first (instead of copying the official template)**
 >
@@ -52,8 +53,8 @@ All four panels are fed by this plugin:
 > | UA | ai_model | ai_model_version | editor |
 > |---|---|---|---|
 > | `wakatime/1.2.1 (…) node/… deepseek/… dsh/…` | ❌ `Wakatime` | `1.2.1` | None |
-> | `deepseek/4.1-flash-eco dsh/0.2.2-rc.5 (linux-…) node/… dsh-wakatime/1.2.2` | ✅ `DeepSeek` | `4.1-flash-eco` | ✅ `Dsh` |
-> | `dsh/0.2.2-rc.5 (linux-…) node/… dsh-wakatime/1.2.2` (when the model is not recognised) | ✅ `None` | None | ✅ `Dsh` |
+> | `deepseek/4.1-flash-eco dsh/0.2.2-rc.5 (linux-…) node/… dsh-wakatime/1.2.3` | ✅ `DeepSeek` | `4.1-flash-eco` | ✅ `Dsh` |
+> | `dsh/0.2.2-rc.5 (linux-…) node/… dsh-wakatime/1.2.3` (when the model is not recognised) | ✅ `None` | None | ✅ `Dsh` |
 >
 > The cost is losing the `wakatime/` header. The parenthesised section is still recognised (the server substring-matches `(linux-…-x86_64)`), but `editor` only resolves to `Dsh` because of the trailing `dsh-wakatime/<ver>` token — **that token cannot be dropped**. OS names are lowercase and arch uses `x86_64` / `aarch64`, taken from 50 real official-CLI UAs in this account.
 
