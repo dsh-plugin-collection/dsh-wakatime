@@ -21,6 +21,14 @@
   Gitea（`dsh-plugins/dsh-wakatime`）均已改名，旧路径各自保留 301 / 重定向，已推出去
   的 clone 与链接不会失效。本地工作目录仍为 `dsh-wakatime-plugin`（改名会使正在运行的
   会话 cwd 与 change-ledger 绑定失效，故留待单独处理）。
+- **重写了提交历史，清除工作邮箱与内网地址**：11 个提交的作者曾是
+  `whq <haoqi.wu@apsystems.com>`（仓库本地 git identity 长期未改，每次提交都把
+  工作邮箱重新带进来），4 个 Gitea 合并提交的正文带 `Reviewed-on: http://192.168.4.77:3000/...`。
+  两者都已公开在 GitHub。仓库当时 0 fork / 0 star / 0 watcher，无外部依赖，故用
+  `git filter-repo` 重写：作者统一为 `WuJiaoJue <103944313+WuJiaoJue@users.noreply.github.com>`，
+  并删除正文里的内网 `Reviewed-on` 行。**文件内容无任何变化**（重写前后 tree 哈希相同），
+  唯一代价是全部提交哈希改变、需要 force push；已推出去的旧 clone 需重新拉取。
+  仓库本地 `user.name/email` 同时改为 GitHub 账号，杜绝再次引入。
 
 ### 修复
 
