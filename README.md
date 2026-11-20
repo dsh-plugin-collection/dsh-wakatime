@@ -1,12 +1,12 @@
 <div align="center">
 
-<img src="assets/logo.svg" width="128" alt="dsh-wakatime-plugin logo"/>
+<img src="assets/logo.svg" width="128" alt="dsh-wakatime logo"/>
 
-# dsh-wakatime-plugin — DSH 的 WakaTime 心跳插件
+# dsh-wakatime — DSH 的 WakaTime 心跳插件
 
 **中文** | [English](./README.en.md)
 
-[![version](https://img.shields.io/badge/version-1.0.0-0EA5E9)](https://github.com/dsh-plugin-collection/dsh-wakatime-plugin)
+[![version](https://img.shields.io/badge/version-1.0.0-0EA5E9)](https://github.com/dsh-plugin-collection/dsh-wakatime)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![DSH](https://img.shields.io/badge/DeepSeek%20Harness-0.2.2--rc.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 
@@ -44,7 +44,7 @@ DSH 里的活动原本不会出现在 WakaTime 上：[WakaTime](https://wakatime
 ## 安装
 
 ```bash
-dsh plugin --profile web add dsh-wakatime-plugin
+dsh plugin --profile web add dsh-wakatime
 ```
 
 装完**重启 `dsh web`** 生效。然后到 **设置 → WakaTime** 填 [API Key](https://wakatime.com/settings/api-key)。
@@ -55,19 +55,19 @@ dsh plugin --profile web add dsh-wakatime-plugin
 从 GitHub 装：
 
 ```bash
-dsh plugin --profile web add github:dsh-plugin-collection/dsh-wakatime-plugin
+dsh plugin --profile web add github:dsh-plugin-collection/dsh-wakatime
 ```
 
 本地开发装（插件目录下）：
 
 ```bash
-dsh plugin --profile web add /path/to/dsh-wakatime-plugin
+dsh plugin --profile web add /path/to/dsh-wakatime
 ```
 
 从源码构建装：
 
 ```bash
-cd dsh-wakatime-plugin && pnpm install && pnpm build
+cd dsh-wakatime && pnpm install && pnpm build
 ```
 
 内部分发：本插件另在内部 Gitea 上以私有库分发，需要时向维护者索取仓库地址，建议固定 commit 安装：

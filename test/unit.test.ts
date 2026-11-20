@@ -598,7 +598,7 @@ describe('client/mirror.ts', () => {
       // 0.2.x 起 describe 镜像的行键 = 条目 id（dsh-wakatime），旧体系才是 wakatime。
       // 只写一个名字时，镜像即使接上了也查不到行 —— 指示灯依旧不亮。
       const snap: MirrorSnapshotLike = {
-        view: { namespaces: [{ ns: 'dsh-wakatime-plugin', secrets: [{ path: ['api_key'], set: true }] }] },
+        view: { namespaces: [{ ns: 'dsh-wakatime', secrets: [{ path: ['api_key'], set: true }] }] },
       };
       expect(secretSlotSet(snap, 'wakatime', 'api_key')).toBe(false);
       expect(secretSlotSet(snap, SETTINGS_NAMESPACE_CANDIDATES, 'api_key')).toBe(true);
@@ -607,11 +607,11 @@ describe('client/mirror.ts', () => {
         view: {
           namespaces: [
             { ns: 'wakatime', secrets: [{ path: ['api_key'], set: false }] },
-            { ns: 'dsh-wakatime-plugin', secrets: [{ path: ['api_key'], set: true }] },
+            { ns: 'dsh-wakatime', secrets: [{ path: ['api_key'], set: true }] },
           ],
         },
       };
-      expect(secretSlotSet(two, ['wakatime', 'dsh-wakatime-plugin'], 'api_key')).toBe(false);
+      expect(secretSlotSet(two, ['wakatime', 'dsh-wakatime'], 'api_key')).toBe(false);
       expect(secretSlotSet(two, ['nope'], 'api_key')).toBe(false);
     });
   });

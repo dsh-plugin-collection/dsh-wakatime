@@ -8,6 +8,16 @@
 
 - WakaTime 自 2026-10 起对**读端点**（`/users/current`、`/users/current/projects`、`/users/current/heartbeats`）使用插件 key 一律返回 `403 API Keys are only for plugins`。心跳**写**端点 `heartbeats.bulk` 不受影响。本插件的「项目名称」候选下拉因此移除。
 
+### 其他
+
+- **包名改回 `dsh-wakatime`**：11-16 统一改名时选了 `dsh-wakatime-plugin`，但该名
+  自 2026-10-03 起已被另一位作者的插件占用（npm 0.5.2，`JularDepick`），我们不是
+  maintainer，`npm publish` 会被直接拒绝。`dsh-wakatime` 是本仓库 2026-08-26 的初始
+  包名，现仍 404 可用，故改回。同步了 `package.json` name / repository / homepage /
+  bugs、`cordis.patch.yml` 的 id 与 name、client 身份回退字面量、测试夹具、两份 README、
+  以及 profile 的依赖键 / `dsh.profile.bundles` / lockfile importer / 注册行 / 软链接。
+  **已存配置不丢**：profile patch 的 `config` 块原地保留（api_key 等原值未动）。
+
 ### 修复
 
 - **改名后 client entry 不激活（`duplicate factory registration`）**：11-16 的统一改名只覆盖了

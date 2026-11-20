@@ -1101,7 +1101,7 @@ describe('Plugin wiring (apply)', () => {
 
   it('keeps a working key when the settings document submits an unusable one', async () => {
     const { ctx, emit, logs } = makeFakeCtx([{
-      ns: 'dsh-wakatime-plugin',
+      ns: 'dsh-wakatime',
       value: { api_key: { nested: 'object' }, include_tool_calls: true },
     }]);
     const session = { id: 'key-clobber', header: { cwd: process.cwd() } };
@@ -1171,7 +1171,7 @@ describe('Plugin wiring (apply)', () => {
     // 心跳却停摆。修复后启动即以 describe() 回读（describe 是权威来源）。
     const session = { id: 'wiring-hydrate', header: { cwd: process.cwd() } };
     const { ctx, emit } = makeFakeCtx([{
-      ns: 'dsh-wakatime-plugin',
+      ns: 'dsh-wakatime',
       value: {
         // api_key 缺席：redactSecrets 把 role('secret') 字段整个移除（不是占位串）
         api_url: server.getBaseUrl(),
@@ -1227,7 +1227,7 @@ describe('Plugin wiring (apply)', () => {
   it('should keep document-provided false overrides at startup', async () => {
     // 反向断言：hydration 不会凭空打开开关 —— 文档明确 false 时仍过滤
     const { ctx, emit } = makeFakeCtx([{
-      ns: 'dsh-wakatime-plugin',
+      ns: 'dsh-wakatime',
       value: {
         api_url: server.getBaseUrl(), heartbeat_interval_ms: 60000,
         project_name: '', language: '',
@@ -1257,7 +1257,7 @@ describe('Plugin wiring (apply)', () => {
     // 启动时 include_user_messages 为 false（入口 config 与文档行都是 false），
     // 保存后翻成 true —— 后续 user/message 必须产生心跳。
     const { ctx, emit, saveAndNotify, describeCallCount } = makeFakeCtx([{
-      ns: 'dsh-wakatime-plugin',
+      ns: 'dsh-wakatime',
       value: {
         api_url: server.getBaseUrl(), heartbeat_interval_ms: 60000,
         project_name: '', language: '',
@@ -1281,7 +1281,7 @@ describe('Plugin wiring (apply)', () => {
     emit('session/event', session, { type: 'user/message', data: { content: 'before' } });
     // WebUI 保存 → 文档行更新 + settings/document-updated
     const before = describeCallCount();
-    saveAndNotify('dsh-wakatime-plugin', {
+    saveAndNotify('dsh-wakatime', {
       api_url: server.getBaseUrl(), heartbeat_interval_ms: 60000,
       project_name: '', language: '',
       include_tool_calls: true, include_user_messages: true, include_assistant_messages: false,
@@ -1312,7 +1312,7 @@ describe('Plugin wiring (apply)', () => {
     // 只取本插件命名空间的那一行，所以即便外插件事件漏进来，也不会把它的值
     // 合并进来（只会多做一次无谓重读）。真正可观测的差异是【有没有发生重读】。
     const { ctx, emit, saveAndNotify, describeCallCount } = makeFakeCtx([{
-      ns: 'dsh-wakatime-plugin',
+      ns: 'dsh-wakatime',
       value: {
         api_url: server.getBaseUrl(), heartbeat_interval_ms: 60000,
         project_name: '', language: '',
@@ -1365,7 +1365,7 @@ describe('Plugin wiring (apply)', () => {
 
     try {
       const { ctx, emit, saveAndNotify } = makeFakeCtx([{
-        ns: 'dsh-wakatime-plugin',
+        ns: 'dsh-wakatime',
         value: {
           api_url: keyBase, heartbeat_interval_ms: 60000,
           project_name: '', language: '',
@@ -1386,7 +1386,7 @@ describe('Plugin wiring (apply)', () => {
 
       emit('agent/status', { agent: { session }, status: 'running' });
       // 用户保存了一个真实的新 key
-      saveAndNotify('dsh-wakatime-plugin', {
+      saveAndNotify('dsh-wakatime', {
         api_key: 'brand_new_key_67890',
         api_url: keyBase, heartbeat_interval_ms: 60000,
         project_name: '', language: '',
@@ -1425,7 +1425,7 @@ describe('Plugin wiring (apply)', () => {
 
     try {
       const { ctx, emit, saveAndNotify } = makeFakeCtx([{
-        ns: 'dsh-wakatime-plugin',
+        ns: 'dsh-wakatime',
         value: {
           // 启动回读时 api_key 也缺席（redacted），必须保留入口 config 的 key
           api_url: keyBase, heartbeat_interval_ms: 60000,
@@ -1448,7 +1448,7 @@ describe('Plugin wiring (apply)', () => {
 
       emit('agent/status', { agent: { session }, status: 'running' });
       // 用户只改了别的字段，key 字段在 redacted 结果里缺席
-      saveAndNotify('dsh-wakatime-plugin', {
+      saveAndNotify('dsh-wakatime', {
         api_url: keyBase, heartbeat_interval_ms: 60000,
         project_name: '', language: '',
         include_tool_calls: true, include_user_messages: true, include_assistant_messages: false,
@@ -1708,7 +1708,7 @@ describe('Plugin wiring (apply)', () => {
       // dispose 之后这个 session 不该再被复活成新定时器。
       // 说明：强引用释放本身在进程内不可观测，这里断言的是它的可观测后果
       //（集合里不再有任何属于该 session 的可重建状态）。
-      saveAndNotify('dsh-wakatime-plugin', {
+      saveAndNotify('dsh-wakatime', {
         api_url: server.getBaseUrl(), heartbeat_interval_ms: 90000,
         project_name: '', language: '',
         include_tool_calls: true, include_user_messages: false, include_assistant_messages: false,
