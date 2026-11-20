@@ -17,6 +17,10 @@
   bugs、`cordis.patch.yml` 的 id 与 name、client 身份回退字面量、测试夹具、两份 README、
   以及 profile 的依赖键 / `dsh.profile.bundles` / lockfile importer / 注册行 / 软链接。
   **已存配置不丢**：profile patch 的 `config` 块原地保留（api_key 等原值未动）。
+- **仓库名同步为 `dsh-wakatime`**：GitHub（`dsh-plugin-collection/dsh-wakatime`）与
+  Gitea（`dsh-plugins/dsh-wakatime`）均已改名，旧路径各自保留 301 / 重定向，已推出去
+  的 clone 与链接不会失效。本地工作目录仍为 `dsh-wakatime-plugin`（改名会使正在运行的
+  会话 cwd 与 change-ledger 绑定失效，故留待单独处理）。
 
 ### 修复
 
