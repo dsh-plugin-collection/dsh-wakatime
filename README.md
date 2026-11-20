@@ -6,7 +6,7 @@
 
 **中文** | [English](./README.en.md)
 
-[![version](https://img.shields.io/badge/version-1.2.0-0EA5E9)](https://github.com/dsh-plugin-collection/dsh-wakatime)
+[![version](https://img.shields.io/badge/version-1.2.1-0EA5E9)](https://github.com/dsh-plugin-collection/dsh-wakatime)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![DSH](https://img.shields.io/badge/DeepSeek%20Harness-0.2.2--rc.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 
@@ -43,7 +43,7 @@ DSH 里的活动原本不会出现在 WakaTime 上：[WakaTime](https://wakatime
 | **Operating Systems** | 同样来自 `User-Agent` 的括号段 `(linux-<内核>-<arch>)` |
 | **Models** | 同样来自 `User-Agent` 里的模型 token（如 `deepseek/4.1-flash-eco`）——WakaTime **没有** `ai_model` 心跳字段，这个面板只认 UA |
 
-> **为什么 UA 要照官方模板拼**：Editors / Operating Systems / Models 三个面板都从 `User-Agent` 解析。本插件按 `wakatime-cli` 的模板 `wakatime/<ver> (<OS>-<core>-<platform>) <runtime> <model?> <editor>` 生成；模型取自宿主消息的 `message.source.model`，并按官方的 `aiModelUserAgentToken` 规则归一化。一条实测样本：`wakatime/1.2.0 (linux-6.18.58-x86_64) node/24.22.0 deepseek/4.1-flash-eco dsh/0.2.2-rc.5`。模型识别不出时该段省略，不会把 `dsh-opendesign-go` 这类没有版本号的 id 硬塞进去污染 `user_agents` 表。
+> **为什么 UA 要照官方模板拼**：Editors / Operating Systems / Models 三个面板都从 `User-Agent` 解析。本插件按 `wakatime-cli` 的模板 `wakatime/<ver> (<OS>-<core>-<platform>) <runtime> <model?> <editor>` 生成；模型取自宿主消息的 `message.source.model`，并按官方的 `aiModelUserAgentToken` 规则归一化。一条实测样本：`wakatime/1.2.1 (linux-6.18.58-x86_64) node/24.22.0 deepseek/4.1-flash-eco dsh/0.2.2-rc.5`。模型识别不出时该段省略，不会把 `dsh-opendesign-go` 这类没有版本号的 id 硬塞进去污染 `user_agents` 表。
 
 ## 安装
 

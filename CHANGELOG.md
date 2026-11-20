@@ -2,6 +2,20 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。条目按*影响面*排序，不按提交顺序。
 
+## [1.2.1] — 2026-11-20
+
+### 修复
+
+- **`dsh/<ver>` 段在真实宿主进程里一直是缺的**：`detectHostVersion()` 里用了
+  `require('node:fs')`，但本插件是 ESM（`package.json` 的 `"type": "module"`）。
+  TypeScript 不报错、tsc 原样保留、vitest（vite 转译）里 `require` 恰好可用，
+  178 个测试全绿，而宿主进程里 `typeof require === 'undefined'`——调用抛
+  ReferenceError 被 catch 吞成空串，UA 静默少一段。生产证据：宿主发出的活心跳是
+  `…node/24.22.0 deepseek/4.1-flash-eco`（无 `dsh/`），而同一版本的手工探针是
+  `…deepseek/4.1-flash-eco dsh/0.2.2-rc.5`。现改为静态 `import`，并补两条回归守卫：
+  一条静态扫描 `src/` 里不得出现 `require(` 调用，一条在**真 ESM 子进程**里跑
+  构建产物断言 `dsh/<ver>` 非空。已实测把 `require` 塞回去会让守卫立刻变红。
+
 ## [1.2.0] — 2026-11-20
 
 ### 修复

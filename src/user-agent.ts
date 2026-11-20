@@ -27,6 +27,8 @@
  * @module dsh-wakatime/user-agent
  */
 
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { release } from 'node:os';
 
 /**
@@ -154,15 +156,16 @@ function detectHostVersionUncached(): string {
   try {
     const entry = process.argv[1];
     if (typeof entry !== 'string' || entry === '') return '';
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const fs = require('node:fs') as typeof import('node:fs');
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const path = require('node:path') as typeof import('node:path');
-    let dir = path.dirname(fs.realpathSync(entry));
+    // 本插件是 ESM（package.json `"type": "module"`）：这里**不能**写 `require`。
+    // 实测踩过——TypeScript 不报错、tsc 原样保留、单测（vite 转译）也能过，
+    // 但宿主进程里 `typeof require === 'undefined'`，调用直接抛 ReferenceError，
+    // 被外层 catch 吞成空串：活心跳的 UA 里就少了 `dsh/<ver>` 这一段。
+    // 顶部的静态 import 在 ESM 下才是有效的。
+    let dir = dirname(realpathSync(entry));
     for (let depth = 0; depth < 8; depth += 1) {
-      const manifest = path.join(dir, 'package.json');
-      if (fs.existsSync(manifest)) {
-        const parsed: unknown = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+      const manifest = join(dir, 'package.json');
+      if (existsSync(manifest)) {
+        const parsed: unknown = JSON.parse(readFileSync(manifest, 'utf8'));
         if (typeof parsed === 'object' && parsed !== null) {
           const name = (parsed as { name?: unknown }).name;
           const version = (parsed as { version?: unknown }).version;
@@ -171,7 +174,7 @@ function detectHostVersionUncached(): string {
           }
         }
       }
-      const parent = path.dirname(dir);
+      const parent = dirname(dir);
       if (parent === dir) break;
       dir = parent;
     }

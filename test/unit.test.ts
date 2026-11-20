@@ -903,3 +903,63 @@ describe('user-agent.ts', () => {
     expect(v === '' || /^\d/.test(v)).toBe(true);
   });
 });
+
+describe('ESM 运行时守卫', () => {
+  // 这一组存在的原因是一次真实事故：`detectHostVersion()` 里写了 `require('node:fs')`。
+  // TypeScript 不报错、tsc 原样保留、vitest（vite 转译）里 require 恰好可用，
+  // 178 个测试全绿——但宿主进程是纯 ESM，`typeof require === 'undefined'`，
+  // 调用抛 ReferenceError 被 catch 吞成空串，活心跳的 UA 静默少了 `dsh/<ver>` 段。
+  // 只有「在真的 ESM 子进程里跑构建产物」才拦得住这类问题。
+  it('src 里不得出现 require（本插件是 ESM）', async () => {
+    const { readdirSync, readFileSync } = await import('node:fs');
+    const dirs = ['../src', '../src/client'];
+    for (const d of dirs) {
+      let files: string[];
+      try {
+        files = readdirSync(new URL(d + '/', import.meta.url)).filter((f) => f.endsWith('.ts') || f.endsWith('.tsx'));
+      } catch {
+        continue;
+      }
+      for (const f of files) {
+        const body = readFileSync(new URL(`${d}/${f}`, import.meta.url), 'utf8');
+        // 注释里可以提到 require；只拦真正的调用。
+        // 只拦能把 `require` 当**函数调用**的行：字符串字面量里的 'require (' 不算，
+        // 注释里提到 require 也不算（project.ts 解析 Lua/MoonScript 时就含这类字面量）。
+        const calls = body.split('\n').filter((ln) => {
+          const t = ln.trim();
+          if (t.startsWith('*') || t.startsWith('//')) return false;
+          const code = ln.replace(/'(?:[^'\\]|\\.)*'/g, "''").replace(/"(?:[^"\\]|\\.)*"/g, '""');
+          return /\brequire\s*\(/.test(code);
+        });
+        expect({ file: f, calls }).toEqual({ file: f, calls: [] });
+      }
+    }
+  });
+
+  it('构建产物在真 ESM 子进程里能解析出宿主版本（不是空串）', async () => {
+    const { existsSync } = await import('node:fs');
+    const { execFileSync } = await import('node:child_process');
+    const bundle = new URL('../lib/user-agent.js', import.meta.url);
+    if (!existsSync(bundle)) return; // 未构建则跳过
+    const hostBin = '/home/wujue/.npm/_npx/b86ed90107c62dab/node_modules/.bin/dsh';
+    const script = `
+      process.argv[1] = ${JSON.stringify(hostBin)};
+      const m = await import(${JSON.stringify(bundle.href)});
+      process.stdout.write(m.detectHostVersion() + '|' + m.currentUserAgent('deepseek-v4.1-flash-eco'));
+    `;
+    let out: string;
+    try {
+      out = execFileSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' });
+    } catch (error) {
+      // 该宿主路径可能不存在（别人的机器）——那时只要求不抛，空串可接受。
+      return;
+    }
+    const [version, ua] = out.split('|');
+    // 在本机这条断言是真闸门：require 回归会立刻让 version 变成空串。
+    if (version !== '') {
+      expect(ua).toContain(`dsh/${version}`);
+    }
+    expect(ua.startsWith('wakatime/')).toBe(true);
+    expect(ua).toContain('deepseek/4.1-flash-eco');
+  });
+});

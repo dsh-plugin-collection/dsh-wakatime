@@ -1,6 +1,6 @@
 {
   "name": "dsh-wakatime",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "WakaTime heartbeat reporting for DeepSeek Harness",
   "icon": "./icon.svg",
   "type": "module",
