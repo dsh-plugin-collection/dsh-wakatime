@@ -1,6 +1,6 @@
 {
   "name": "dsh-wakatime",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "WakaTime heartbeat reporting for DeepSeek Harness",
   "icon": "./icon.svg",
   "type": "module",
@@ -57,6 +57,7 @@
     "telemetry",
     "time-tracking"
   ],
+  "author": "WuJiaoJue",
   "license": "MIT",
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.5",
