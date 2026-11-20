@@ -2,6 +2,41 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。条目按*影响面*排序，不按提交顺序。
 
+## [1.2.2] — 2026-11-20
+
+### 修复
+
+- **Models 面板显示的模型是错的（`Wakatime 100%`）**：1.2.1 把 UA 改成了官方模板
+  `wakatime/<ver> (<OS>-…) …`，而 `user_agents` 端点返回的服务端解析结果显示，
+  **只要 UA 以 `wakatime/<ver>` 开头，服务端就把 wakatime 自己当成模型**
+  （`ai_model='Wakatime'`、`ai_model_version=<插件版本>`），后面真正的模型 token
+  被忽略。这是 1.2.1 引入的回归——1.2.0 之前是空，1.2.1 变成了错误值，错误归因
+  比空着更误导人。
+
+  改用**模型 token 打头**的实测形状：
+
+  ```
+  deepseek/4.1-flash-eco dsh/0.2.2-rc.5 (linux-6.18.58-x86_64) node/24.22.0 dsh-wakatime/1.2.2
+    → ai_model='DeepSeek'  ai_model_version='4.1-flash-eco'  editor='Dsh'
+  ```
+
+  模型识别不出时首位放 `dsh/<hostVer>`，实测服务端返回 `ai_model=None`
+  （不再出现假归因）；宿主版本探测不到时用 `0.0.0` 占位——它必须占住首位，
+  否则括号段会落到首位被当成模型名（实测 `ai_model='(linux-…)'`）。
+
+  代价是没有 `wakatime/` 头。**OS 括号段实测仍被识别**（服务端对
+  `(linux-…-x86_64)` 做子串匹配），但 `editor` 要靠末尾的
+  `dsh-wakatime/<ver>` 才回落成 `Dsh`——该 token 不能省。
+
+### 验证方式
+
+服务端解析 UA 的代码不开源，但这轮找到了**可实测的通道**：`user_agents` 端点
+（`last_seen_at` 是**写**路径产生的，插件 key 可读）会返回 `ai_model` /
+`ai_model_version` / `editor` / `version`。据此把十几轮 UA 变体打进真实端点并读回
+解析结果，才定位到「`wakatime/` 开头会被当模型」这条规则。前几版 README 里
+「面板是否点亮无法验证」的说法就此作废。
+
+
 ## [1.2.1] — 2026-11-20
 
 ### 修复
@@ -61,11 +96,13 @@
 - 本地 mock 端点抓包确认：每条心跳的 `user_agent` 逐条存在，HTTP 头与载荷一致，
   `line_additions` / `line_deletions` 已消失，`ai_line_changes` 出现在 write 心跳上。
 
-### 仍无法本地验证
+### 验证边界（1.2.2 已推翻部分结论）
 
-- 服务端解析 UA 的代码不开源，且 `user_agents` 之外的面板读端点对本插件 key 返回 403 /
-  404（`operating_systems`、`editors`、`machine_names`、`ai_models` 均不可读），所以
-  **面板是否真的点亮只能以实际面板为准**。本版只保证 UA 形状与官方 CLI 一致。
+- 当时写的是「面板是否点亮无法验证」。**1.2.2 找到了通道**：`user_agents` 端点可读，
+  且返回服务端解析结果（`ai_model` / `editor`），据此才发现本版的 UA 形状会让服务端
+  把 `wakatime` 当成模型——所以这一版其实是错的，修正见 1.2.2。
+- 仍然读不到的：`operating_systems`、`editors`、`ai_models`、`machine_names`、
+  `summaries`（403/404）。OS 与 Machines 两个面板的实际归属仍只能看面板。
 
 
 ## [1.1.0] — 2026-11-20

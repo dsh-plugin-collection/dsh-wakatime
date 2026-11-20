@@ -860,21 +860,24 @@ describe('user-agent.ts', () => {
     expect(aiModelToken('')).toBe('');
   });
 
-  it('UA 以 wakatime/ 开头并带 (OS-...) 括号段（否则 OS 解析不出来）', async () => {
+  it('UA 里模型 token 在最前（服务端只认这个位置）', async () => {
     const { buildUserAgent } = await import('../src/user-agent.js');
     const ua = buildUserAgent({
-      hostVersion: '0.2.2-rc.5', pluginVersion: '1.2.0',
+      hostVersion: '0.2.2-rc.5', pluginVersion: '1.2.2',
       model: 'deepseek-v4.1-flash-eco',
       kernelRelease: '6.8.0', nodeVersion: '24.22.0', platform: 'linux', arch: 'x64',
     });
-    expect(ua.startsWith('wakatime/')).toBe(true);
-    // OS 名小写、arch 用官方词汇（x86_64）——取自本账号 50 条官方 CLI UA 样本。
-    expect(ua).toMatch(/^wakatime\/[^ ]+ \(linux-6\.8\.0-x86_64\) node\/24\.22\.0 /);
-    expect(ua).toContain('deepseek/4.1-flash-eco');
+    // 实测：以 wakatime/<ver> 开头会让服务端把 wakatime 自己当成模型
+    // （ai_model='Wakatime'），模型 token 必须放首位才被识别。
+    expect(ua.startsWith('deepseek/4.1-flash-eco ')).toBe(true);
     expect(ua).toContain('dsh/0.2.2-rc.5');
+    // OS 括号段与 arch 词汇：取自本账号里官方 CLI 的 50 条 UA 样本
+    expect(ua).toMatch(/\(linux-6\.8\.0-x86_64\)/);
+    // 末尾必须有插件 token：editor 靠它回落成 `Dsh`（实测 editor='Dsh'）
+    expect(ua.endsWith('dsh-wakatime/1.2.2')).toBe(true);
   });
 
-  it('windows/macOS 的 OS 名与官方取值一致', async () => {
+  it('windows/macOS 的 OS 名与 arch 词汇和官方一致', async () => {
     const { buildUserAgent } = await import('../src/user-agent.js');
     const win = buildUserAgent({ hostVersion: 'x', pluginVersion: '1', platform: 'win32', kernelRelease: '10.0', nodeVersion: 'n', arch: 'x64' });
     expect(win).toContain('(windows-10.0-x86_64)');
@@ -882,17 +885,21 @@ describe('user-agent.ts', () => {
     expect(mac).toContain('(darwin-24.0-aarch64)');
   });
 
-  it('识别不出的模型不拼进 UA（不污染 user_agents 表）', async () => {
+  it('识别不出的模型不拼进 UA，改用 dsh/<hostVer> 占首位', async () => {
     const { buildUserAgent } = await import('../src/user-agent.js');
     const ua = buildUserAgent({ hostVersion: 'h', pluginVersion: '1', model: 'dsh-opendesign-go', kernelRelease: 'k', nodeVersion: 'n', arch: 'x64' });
-    expect(ua).toBe('wakatime/1 (linux-k-x86_64) node/n dsh/h');
+    // dsh-opendesign-go 没有版本号段 → aiModelToken 返回空 → 不能出现在 UA 里
+    expect(ua).not.toContain('dsh-opendesign-go');
+    expect(ua.startsWith('dsh/h ')).toBe(true);
   });
 
-  it('探测不到宿主版本时省略 dsh 段，而不是编一个版本', async () => {
+  it('探测不到宿主版本时用 0.0.0 占首位，而不是省略（否则括号段会被当成模型名）', async () => {
     const { buildUserAgent } = await import('../src/user-agent.js');
     const ua = buildUserAgent({ hostVersion: '', pluginVersion: '1', kernelRelease: 'k', nodeVersion: 'n', arch: 'x64' });
-    expect(ua).toBe('wakatime/1 (linux-k-x86_64) node/n');
-    expect(ua).not.toContain('dsh/');
+    expect(ua.startsWith('dsh/0.0.0 ')).toBe(true);
+    expect(ua).toContain('(linux-k-x86_64)');
+    // 0.0.0 明显不是真实宿主版本，别的版本号不该凭空出现
+    expect(ua).not.toContain('0.2.');
   });
 
  it('宿主版本探测不返回空壳或插件自己的 devDependency 版本', async () => {
@@ -959,7 +966,7 @@ describe('ESM 运行时守卫', () => {
     if (version !== '') {
       expect(ua).toContain(`dsh/${version}`);
     }
-    expect(ua.startsWith('wakatime/')).toBe(true);
     expect(ua).toContain('deepseek/4.1-flash-eco');
+    expect(ua).toContain('dsh/');
   });
 });

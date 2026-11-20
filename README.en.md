@@ -6,7 +6,7 @@
 
 [中文](./README.md) | **English**
 
-[![version](https://img.shields.io/badge/version-1.2.1-0EA5E9)](https://github.com/dsh-plugin-collection/dsh-wakatime)
+[![version](https://img.shields.io/badge/version-1.2.2-0EA5E9)](https://github.com/dsh-plugin-collection/dsh-wakatime)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![DSH](https://img.shields.io/badge/DeepSeek%20Harness-0.2.2--rc.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 
@@ -43,7 +43,19 @@ All four panels are fed by this plugin:
 | **Operating Systems** | Also from the `User-Agent` parenthesised section `(linux-<kernel>-<arch>)` |
 | **Models** | Also from the model token inside `User-Agent` (e.g. `deepseek/4.1-flash-eco`) — WakaTime has **no** `ai_model` heartbeat field; this panel reads the UA only |
 
-> **Why the UA follows the official template**: the Editors, Operating Systems and Models panels are all derived from `User-Agent`. This plugin emits `wakatime/<ver> (<OS>-<core>-<platform>) <runtime> <model?> <editor>`; the model comes from the host message's `message.source.model` and is normalised with the official `aiModelUserAgentToken` rules. A real sample: `wakatime/1.2.1 (linux-6.18.58-x86_64) node/24.22.0 deepseek/4.1-flash-eco dsh/0.2.2-rc.5`. When a model id has no recognisable version segment (`dsh-opendesign-go`), that part is omitted rather than polluting the `user_agents` table.
+> **Why the model token comes first (instead of copying the official template)**
+>
+> The official `wakatime-cli` template is `wakatime/<ver> (<OS>-<core>-<platform>) <runtime> <plugin>`, and this plugin copied it at first. But the `user_agents` endpoint returns **the server's parse result for each UA** (`ai_model` / `ai_model_version` / `editor`), and after testing a dozen variants the finding is: **when a UA starts with `wakatime/<ver>`, the server treats wakatime itself as the model** — `ai_model='Wakatime'`, `ai_model_version=<plugin version>` — and ignores the real model token after it. Copying the official template therefore always makes the Models panel show `Wakatime`.
+>
+> Putting the model token first is the shape that measurably works:
+>
+> | UA | ai_model | ai_model_version | editor |
+> |---|---|---|---|
+> | `wakatime/1.2.1 (…) node/… deepseek/… dsh/…` | ❌ `Wakatime` | `1.2.1` | None |
+> | `deepseek/4.1-flash-eco dsh/0.2.2-rc.5 (linux-…) node/… dsh-wakatime/1.2.2` | ✅ `DeepSeek` | `4.1-flash-eco` | ✅ `Dsh` |
+> | `dsh/0.2.2-rc.5 (linux-…) node/… dsh-wakatime/1.2.2` (when the model is not recognised) | ✅ `None` | None | ✅ `Dsh` |
+>
+> The cost is losing the `wakatime/` header. The parenthesised section is still recognised (the server substring-matches `(linux-…-x86_64)`), but `editor` only resolves to `Dsh` because of the trailing `dsh-wakatime/<ver>` token — **that token cannot be dropped**. OS names are lowercase and arch uses `x86_64` / `aarch64`, taken from 50 real official-CLI UAs in this account.
 
 ## Install
 

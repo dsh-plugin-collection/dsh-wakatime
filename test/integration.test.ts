@@ -402,10 +402,10 @@ describe('Integration Tests', () => {
 
       const [heartbeat] = tracker.getPending();
       expect(typeof heartbeat.user_agent).toBe('string');
-      expect(heartbeat.user_agent).toContain('deepseek/4.1-flash-eco');
-      // 官方模板硬要求：wakatime/ 前缀 + (OS-...) 括号段，否则 OS 面板是 Unknown
-      expect(heartbeat.user_agent!.startsWith('wakatime/')).toBe(true);
+      // 模型 token 必须在首位：以 wakatime/ 开头会让服务端把 wakatime 当模型
+      expect(heartbeat.user_agent!.startsWith('deepseek/4.1-flash-eco ')).toBe(true);
       expect(heartbeat.user_agent).toContain('(linux-');
+      expect(heartbeat.user_agent).toContain('dsh-wakatime/');
     });
 
     it('tags every heartbeat with user_agent, including tool calls that carry no model', async () => {
@@ -420,7 +420,10 @@ describe('Integration Tests', () => {
       } as any);
       for (const hb of tracker.getPending()) {
         expect(typeof hb.user_agent).toBe('string');
-        expect(hb.user_agent!.startsWith('wakatime/')).toBe(true);
+        // 无模型时首位放 dsh/<hostVer>；括号段与插件 token 仍必须在
+        expect(hb.user_agent).toMatch(/^(dsh\/|deepseek\/|node\/)/);
+        expect(hb.user_agent).toContain('(');
+        expect(hb.user_agent).toContain('dsh-wakatime/');
       }
     });
 

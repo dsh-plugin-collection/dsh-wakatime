@@ -221,31 +221,37 @@ export interface UserAgentParts {
 }
 
 /**
- * 按官方模板拼 User-Agent。
+ * 拼 User-Agent。
  *
- * 形状与 `wakatime-cli` 的 `UserAgent()`（以及注入模型后的
- * `aiUserAgentWithModelTokenAndEditor`）输出同构：
+ * 形状（**实测形状**，不是照抄官方模板，原因见下）：
  *
  * ```
- * wakatime/<pluginVer> (<OS>-<core>-<platform>) <runtime> <modelToken?> <editorChain>
+ * <modelToken|dsh/0.0.0> dsh/<hostVer> (<OS>-<core>-<platform>) node/<ver> dsh-wakatime/<pluginVer>
  * ```
  *
- * 逐项对齐官方模板 `"wakatime/%s (%s-%s-%s) %s %s"`：
+ * ## 为什么不是官方模板
  *
- *  - **`wakatime/<本插件版本>`**：这个前缀是硬要求（`splitUserAgent` 靠它切
- *    header/products；没有它，含 OS 的括号段会被当 products，OS 就解析不出来）。
- *    填本插件版本而非宿主版本，`user_agents` 里才能反查是哪个插件发的。
- *  - **括号段 `OS-core-platform`**：官方三项依次是 OS 名、CPU 核信息、平台架构；
- *    只有 OS 参与面板归类，后两项仅用于区分机器，这里用内核 release 与 Node
- *    版本充当（不引入新的系统信息采集）。
- *  - **products 段**：官方是 `<runtime> <plugin 链>`；模型 token 由
- *    `userAgentWithPrependedAgent` **前置**到 products 首位，故这里同样放在
- *    runtime 之前。识别不出的模型一律不拼——发出一个解析不了的 token 只会
- *    污染 `user_agents` 表，不会点亮任何面板。
+ * 官方 `wakatime-cli` 的模板是 `wakatime/%s (%s-%s-%s) %s %s`，本插件最初也照抄了
+ * 它。但 `user_agents` 端点会返回**服务端对每条 UA 的解析结果**（`ai_model` /
+ * `ai_model_version` / `editor`），实测十几种变体后得到两条硬结论：
  *
- * 关于验证边界：服务端解析 UA 的代码不开源，且 `user_agents` 读端点对本插件
- * 的 key 返回 403，**无法在本机实测「面板是否点亮」**。因此这里只保证「与官方
- * CLI 产出的形状一致」，而不是「已验证服务端会按预期归类」。
+ *  1. **UA 以 `wakatime/<ver>` 开头时，服务端把 wakatime 自己当成模型**：
+ *     `ai_model='Wakatime'`、`ai_model_version=<插件版本>`，后面的模型 token 全被
+ *     忽略。照抄官方模板必然得到这个结果——Models 面板显示的会是 `Wakatime`。
+ *  2. **模型 token 放在首位才能被识别**：
+ *     `deepseek/4.1-flash-eco dsh/<v> (linux-…) node/<v> dsh-wakatime/<v>`
+ *     → `ai_model='DeepSeek'`、`ai_model_version='4.1-flash-eco'`、`editor='Dsh'`。
+ *
+ * 代价：没有 `wakatime/` 头，官方 `splitUserAgent` 切不出 header；但实测括号段
+ * 仍被服务端识别（它对 `(linux-…-x86_64)` 做子串匹配），`editor` 则要靠在末尾
+ * 放 `dsh-wakatime/<ver>` 才回落成 `Dsh`——所以末尾那个 token **不能省**。
+ *
+ * ## 无模型时
+ *
+ * 模型识别不出（如 `dsh-opendesign-go` 没有版本号）时，首位放 `dsh/<hostVer>`：
+ * 宁可让这条心跳不计入任何模型，也不发一个解析不了的 token（那只会往
+ * `user_agents` 表里灌垃圾条目）。宿主版本探测不到时用 `0.0.0` 占位——它必须
+ * 占住首位（否则括号段会落到首位、被当成模型名），又明显不是真版本号。
  *
  * @param parts - 见 {@link UserAgentParts}。
  * @returns 单行 UA 字符串。
@@ -257,22 +263,31 @@ export function buildUserAgent(parts: UserAgentParts): string {
   const arch = archName(parts.arch ?? process.arch);
   const os = osName(platform);
 
-  // header 段 = `wakatime/<ver> (<OS>-…>) <runtime>`；官方 splitUserAgent 把
-  // 括号后第一个空格前的内容归入 header，其余才是 products，所以 runtime 必须
-  // 紧跟括号，不能落进 products。
-  const header = `wakatime/${parts.pluginVersion} (${os}-${kernel}-${arch}) node/${nodeVersion}`;
+  // 宿主版本探测不到时用 `0.0.0`：必须占住首 token 的位置（否则括号段会落到
+  // 首位、被服务端当成模型名），同时它明显不是真实版本，不会冒充具体版本号。
+  const host = parts.hostVersion === '' ? '0.0.0' : parts.hostVersion;
 
-  // products = [模型 token?] + editor 链。模型放首位是照官方
-  // `userAgentWithPrependedAgent` 的输出顺序（模型 → editor → 其余）。
-  // 探测不到宿主版本时省略 `dsh/` 段：宁可少一个 token，也不发一个编出来的版本
-  // （Editors 面板此时回退到 `node/…`，仍能归类，不会污染 user_agents 表）。
-  const products: string[] = [];
   const token = parts.model === undefined ? '' : aiModelToken(parts.model, parts.complexity ?? '');
-  if (token !== '') products.push(token);
-  if (parts.hostVersion !== '') products.push(`dsh/${parts.hostVersion}`);
 
-  // products 可能为空（探测不到宿主版本且模型识别不出）——此时不能留尾随空格。
-  return products.length === 0 ? header : `${header} ${products.join(' ')}`;
+  // ── 为什么模型在最前面、而不是官方那样跟在 `wakatime/` 头之后 ──
+  //
+  // 实测（`user_agents` 端点会返回服务端解析结果，见 1.2.2 的 CHANGELOG）：
+  // 只要串以 `wakatime/<ver>` 开头，服务端就把**那个 wakatime 自己**当成模型
+  // （`ai_model='Wakatime'`、`ai_model_version=<插件版本>`），后面的模型 token
+  // 一律忽略。这正是面板里出现 `Wakatime 100%` 的原因。
+  //
+  // 把模型 token 提到首位则是实测可用的形状：
+  //   deepseek/4.1-flash-eco dsh/0.2.2-rc.5 (linux-…) node/24.22.0 dsh-wakatime/1.2.2
+  //     → ai_model='DeepSeek'  ai_model_version='4.1-flash-eco'  editor='Dsh'
+  // 代价是丢了 `wakatime/` 头——官方 `splitUserAgent` 靠它切 header/products，
+  // 没有它 OS 括号段理论上解析不到。**但实测括号段仍在**（服务端自己对
+  // `(linux-…-x86_64)` 做子串识别），代价是 `editor` 字段要靠末尾的
+  // `dsh-wakatime/<ver>` 才回落成 `Dsh`——所以这个 token 不能省。
+  const head = token === '' ? `dsh/${host}` : `${token} dsh/${host}`;
+  const system = `(${os}-${kernel}-${arch})`;
+  const tail = `node/${nodeVersion} dsh-wakatime/${parts.pluginVersion}`;
+
+  return `${head} ${system} ${tail}`;
 }
 
 /**

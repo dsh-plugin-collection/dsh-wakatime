@@ -6,7 +6,7 @@
 
 **中文** | [English](./README.en.md)
 
-[![version](https://img.shields.io/badge/version-1.2.1-0EA5E9)](https://github.com/dsh-plugin-collection/dsh-wakatime)
+[![version](https://img.shields.io/badge/version-1.2.2-0EA5E9)](https://github.com/dsh-plugin-collection/dsh-wakatime)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![DSH](https://img.shields.io/badge/DeepSeek%20Harness-0.2.2--rc.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 
@@ -40,10 +40,22 @@ DSH 里的活动原本不会出现在 WakaTime 上：[WakaTime](https://wakatime
 | **Categories** | 工具调用映射（见[类别映射](#类别映射)）——`coding` / `browsing` / `researching` 等 |
 | **Languages** | 按文件扩展名推断 |
 | **Editors** | 由心跳的 `User-Agent` 推出，所以「在 DSH 里干活」在面板上单独成了一类 |
-| **Operating Systems** | 同样来自 `User-Agent` 的括号段 `(linux-<内核>-<arch>)` |
+| **Operating Systems** | 同样来自 `User-Agent` 的括号段 `(linux-<内核>-<arch>)`（实测服务端对括号段做子串识别，不依赖 `wakatime/` 头） |
 | **Models** | 同样来自 `User-Agent` 里的模型 token（如 `deepseek/4.1-flash-eco`）——WakaTime **没有** `ai_model` 心跳字段，这个面板只认 UA |
 
-> **为什么 UA 要照官方模板拼**：Editors / Operating Systems / Models 三个面板都从 `User-Agent` 解析。本插件按 `wakatime-cli` 的模板 `wakatime/<ver> (<OS>-<core>-<platform>) <runtime> <model?> <editor>` 生成；模型取自宿主消息的 `message.source.model`，并按官方的 `aiModelUserAgentToken` 规则归一化。一条实测样本：`wakatime/1.2.1 (linux-6.18.58-x86_64) node/24.22.0 deepseek/4.1-flash-eco dsh/0.2.2-rc.5`。模型识别不出时该段省略，不会把 `dsh-opendesign-go` 这类没有版本号的 id 硬塞进去污染 `user_agents` 表。
+> **为什么 UA 的模型 token 在最前面（而不是照抄官方模板）**
+>
+> 官方 `wakatime-cli` 的模板是 `wakatime/<ver> (<OS>-<core>-<platform>) <runtime> <plugin>`，本插件最初也照抄了。但 `user_agents` 端点会返回**服务端对每条 UA 的解析结果**（`ai_model` / `ai_model_version` / `editor`），实测十几种变体后发现：**UA 以 `wakatime/<ver>` 开头时，服务端会把 wakatime 自己当成模型**——`ai_model='Wakatime'`、`ai_model_version=<插件版本>`，后面真正的模型 token 全被忽略。照抄官方模板必然得到 Models 面板显示 `Wakatime` 的结果。
+>
+> 把模型 token 提到首位则是实测可用的形状：
+>
+> | UA | ai_model | ai_model_version | editor |
+> |---|---|---|---|
+> | `wakatime/1.2.1 (…) node/… deepseek/… dsh/…` | ❌ `Wakatime` | `1.2.1` | None |
+> | `deepseek/4.1-flash-eco dsh/0.2.2-rc.5 (linux-…) node/… dsh-wakatime/1.2.2` | ✅ `DeepSeek` | `4.1-flash-eco` | ✅ `Dsh` |
+> | `dsh/0.2.2-rc.5 (linux-…) node/… dsh-wakatime/1.2.2`（模型识别不出时） | ✅ `None` | None | ✅ `Dsh` |
+>
+> 代价是没有 `wakatime/` 头。实测括号段仍被服务端识别（它对 `(linux-…-x86_64)` 做子串匹配），`editor` 则靠在末尾放 `dsh-wakatime/<ver>` 才回落成 `Dsh`——末尾那个 token **不能省**。OS 名用小写、arch 用 `x86_64` / `aarch64`，取自本账号里官方 CLI 的 50 条 UA 样本。
 
 ## 安装
 
