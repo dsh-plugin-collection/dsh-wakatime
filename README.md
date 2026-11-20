@@ -1,256 +1,260 @@
+<div align="center">
+
+<img src="assets/logo.svg" width="128" alt="dsh-wakatime-plugin logo"/>
+
+# dsh-wakatime-plugin — DSH 的 WakaTime 心跳插件
+
+**中文** | [English](./README.en.md)
+
+[![version](https://img.shields.io/badge/version-1.0.0-0EA5E9)](https://github.com/dsh-plugin-collection/dsh-wakatime-plugin)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![DSH](https://img.shields.io/badge/DeepSeek%20Harness-0.2.2--rc.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
+
+</div>
+
+---
+
+## 这是什么
+
+DSH 里的活动原本不会出现在 WakaTime 上：[WakaTime](https://wakatime.com) 靠编辑器插件上报，而你在 DSH 里的工作发生在终端和 AI 对话里。本插件补上这一段——它监听 DSH 的事件，转成 WakaTime 心跳发出去。
+
+- 一条 `write` / `edit` → 一条带行数与语言的心跳
+- 一条 `bash` 命令 → 一条按命令内容判定类别的 `app` 心跳
+- 一轮 AI 回复 → 一条带 token 用量的 `ai coding` 心跳
+
+不做的事：不改 DSH 核心、不打包宿主组件、不做本地存储以外的分析。
+
+## 效果预览
+
+装好之后的 WakaTime 面板：
+
 <p align="center">
-  <img src="assets/logo.svg" width="128" alt="dsh-wakatime-plugin logo"/>
+  <img src="docs/media/screenshot-dashboard.png" width="900" alt="WakaTime 面板：项目、分类、语言、编辑器四个维度都有来自 DSH 的统计"/>
 </p>
 
-# dsh-wakatime-plugin
+四个维度都由本插件喂数据：
 
-**English** | [简体中文](./README.zh-CN.md)
-
-**Your time inside DSH, in your [WakaTime](https://wakatime.com) dashboard.**
-
-> A [WakaTime](https://wakatime.com) heartbeat plugin for DeepSeek Harness: tracks AI-assisted coding activity — every tool call, every shell command, every turn — grouped by **project / language / category**, with AI token reporting.
-
-> Community integration. Not affiliated with WakaTime.
-
-## What this is
-
-Activity inside DSH never reaches WakaTime on its own: [WakaTime](https://wakatime.com) is fed by editor plugins, while your work here happens in a terminal and in AI conversations. This plugin bridges that gap — it listens to DSH events and turns them into WakaTime heartbeats.
-
-- a `write` / `edit` → one heartbeat with line counts and language
-- a `bash` command → one `app` heartbeat whose category comes from the command itself
-- an AI turn → one `ai coding` heartbeat carrying token usage
-
-What it does not do: patch DSH internals, bundle host components, or store anything beyond the local retry cache.
-
-## Preview
-
-The WakaTime dashboard after installing:
-
-<p align="center">
-  <img src="docs/media/screenshot-dashboard.png" width="900" alt="WakaTime dashboard with DSH-fed project, category, language and editor stats"/>
-</p>
-
-All four panels are fed by this plugin:
-
-| Panel | Source |
+| 面板区域 | 数据来源 |
 |---|---|
-| **Projects** | Each heartbeat's `project`, inferred from git / `package.json` / directory name |
-| **Categories** | Tool → category mapping (see [Category mapping](#category-mapping)) |
-| **Languages** | Inferred from file extensions |
-| **Editors** | Derived from the heartbeat `User-Agent` (`dsh/1.0.0 dsh-wakatime/1.0.0`), which is why "working in DSH" shows up as its own editor |
+| **Projects** | 每次心跳的 `project`：自动从 git / `package.json` / 目录名推断 |
+| **Categories** | 工具调用映射（见[类别映射](#类别映射)）——`coding` / `browsing` / `researching` 等 |
+| **Languages** | 按文件扩展名推断 |
+| **Editors** | 由心跳的 `User-Agent`（`dsh/1.0.0 dsh-wakatime/1.0.0`）推出，所以"在 DSH 里干活"在面板上单独成了一类 |
 
-## Install
+## 安装
 
 ```bash
 dsh plugin --profile web add dsh-wakatime-plugin
 ```
 
-**Restart `dsh web`** afterwards. Then open **Settings → WakaTime** and paste your [API key](https://wakatime.com/settings/api-key).
+装完**重启 `dsh web`** 生效。然后到 **设置 → WakaTime** 填 [API Key](https://wakatime.com/settings/api-key)。
 
 <details>
-<summary>Other install methods</summary>
+<summary>其他安装方式</summary>
 
-From GitHub:
+从 GitHub 装：
 
 ```bash
 dsh plugin --profile web add github:dsh-plugin-collection/dsh-wakatime-plugin
 ```
 
-Local development (from the plugin directory):
+本地开发装（插件目录下）：
 
 ```bash
 dsh plugin --profile web add /path/to/dsh-wakatime-plugin
 ```
 
-From source:
+从源码构建装：
 
 ```bash
 cd dsh-wakatime-plugin && pnpm install && pnpm build
 ```
 
-Internal distribution: also mirrored on a private Gitea for internal use — ask the maintainer for the URL and pin a commit:
+内部分发：本插件另在内部 Gitea 上以私有库分发，需要时向维护者索取仓库地址，建议固定 commit 安装：
 
 ```bash
-dsh plugin --profile web add <internal-repo-url>#<commit-sha>
+dsh plugin --profile web add <内部仓库地址>#<commit-sha>
 ```
 </details>
 
-## Configuration
+## 配置
 
-Everything lives in **Settings → WakaTime** and takes effect on save — no restart.
+全部设置都在 **设置 → WakaTime**，保存即生效，无需重启。
 
-| Setting | Description |
+| 项 | 说明 |
 |---|---|
-| **API Key** | WakaTime API key (masked input). When empty it falls back to `WAKATIME_API_KEY`, then `~/.wakatime.cfg`, then `cordis.patch.yml` |
-| **API URL** | Service endpoint, default `https://wakatime.com`; set your own for a self-hosted [WakaTime](https://wakatime.com) |
-| **Proxy URL** | `http://host:port`. Empty falls back to `HTTPS_PROXY`, then `proxy` in `~/.wakatime.cfg`; `none` forces a direct connection |
-| **No-proxy hosts** | Comma separated, empty inherits `NO_PROXY`. e.g. `wakatime.com` connects that host directly |
-| **Heartbeat interval** | 60000–300000 ms |
-| **Project name / Language** | Empty = auto-detect; a value overrides it |
-| **Terminal app name** | The entity for command heartbeats, default `Terminal`; set it to e.g. `DSH` |
-| **Track switches ×3** | Tool calls / user messages / AI messages |
-| **Cache** | Enable local cache + limit (10–1000 entries) |
-| **Debug mode** | More verbose logging |
+| **API Key** | WakaTime API key（密码框展示）。留空时依次回退环境变量 `WAKATIME_API_KEY` → `~/.wakatime.cfg` → `cordis.patch.yml` |
+| **API URL** | 服务地址，默认 `https://wakatime.com`；自托管 [WakaTime](https://wakatime.com) 填自己的 |
+| **代理地址** | `http://host:port`。留空依次回退 `HTTPS_PROXY` → `~/.wakatime.cfg` 的 `proxy`；填 `none` 强制直连 |
+| **不走代理的地址** | 逗号分隔，留空沿用 `NO_PROXY`。如 `wakatime.com` 表示该域名直连 |
+| **心跳间隔** | 60000–300000 ms |
+| **项目名称 / 语言** | 留空自动识别，填了则覆盖 |
+| **终端应用名** | 命令类心跳的 entity，默认 `Terminal`；可填 `DSH` 之类 |
+| **追踪开关 ×3** | 工具调用 / 用户消息 / AI 消息 |
+| **缓存** | 是否本地缓存 + 上限（10–1000 条） |
+| **调试模式** | 打印更详细的日志 |
 
-**API key precedence**: settings page → `WAKATIME_API_KEY` → `cordis.patch.yml` → `~/.wakatime.cfg`. Every layer only accepts a non-empty string; a malformed value is skipped with a warning and resolution continues.
+**API Key 优先级**：设置页 → `WAKATIME_API_KEY` 环境变量 → `cordis.patch.yml` → `~/.wakatime.cfg`。三层都只接受非空字符串，形状不对的会被忽略并回退，同时告警里说明。
 
-## Verify
+## 验证
 
-Four steps to confirm it works:
+装完按这四步确认它在工作：
 
-1. **Check the log** — after restart you should see `loaded with API key waka_****xxxx`;
-2. **Make DSH do something** — read a file, run a command;
-3. **Wait one heartbeat cycle** (120 s by default) until a flush succeeds;
-4. **Open the [WakaTime dashboard](https://wakatime.com/dashboard)** — today's time, projects and languages should show the activity.
+1. **看日志**——重启后应有 `loaded with API key waka_****xxxx`；
+2. **让 DSH 做点事**——读一个文件、跑一条命令；
+3. **等一个心跳周期**（默认 120 秒），日志出现发送成功；
+4. **打开 [WakaTime 面板](https://wakatime.com/dashboard)**——今天的时间、项目、语言三项应出现对应记录。
 
-If step 3 stays quiet, check the local cache first:
+如果第 3 步没动静，先看本地缓存：
 
 ```bash
 wc -l ~/.dsh/wakatime/heartbeat-cache.jsonl
 ```
 
-- `0` lines or no file = healthy (the cache is only written on failure);
-- **growing** = sends are failing — look for `上报失败…` in the log.
+- `0` 行或文件不存在 = 一切正常（缓存只在失败时写入）；
+- **持续增长** = 发送在失败，这时看日志里的 `上报失败…`。
 
-## Compatibility
+## 兼容性
 
-| Side | Notes |
+| 端 | 说明 |
 |---|---|
-| **DSH** | Supported range is `engines.dsh` in `package.json`; currently covers generations `0.1.2` – `0.2.3` (prereleases included). The host validates it at startup and disables the plugin on a mismatch |
-| **Node** | >= 22.19 (including 24+) |
-| **Platform** | Windows / macOS / Linux |
-| **WakaTime** | [wakatime.com](https://wakatime.com), or any WakaTime-compatible self-hosted server |
-| **Other telemetry plugins** | One heartbeat backend per profile — do not run codetime or similar alongside |
+| **DSH** | 支持范围见 `package.json` 的 `engines.dsh`；当前覆盖 `0.1.2` ~ `0.2.3` 各代（含预发布）。宿主启动时会校验，不匹配会禁用插件 |
+| **Node** | ≥ 22.19（含 24+） |
+| **平台** | Windows / macOS / Linux |
+| **WakaTime** | 官方 [wakatime.com](https://wakatime.com)，或任意 WakaTime 兼容自托管服务 |
+| **其他遥测插件** | 每个 profile 只保留一个心跳后端，勿与 codetime 等同类插件同时启用 |
 
-## Category mapping
+## 类别映射
 
-| DSH tool | WakaTime category | is_write |
+| DSH 工具 | WakaTime 类别 | is_write |
 |---|---|---|
 | `write` / `edit` | `coding` | ✅ |
 | `read` / `grep` / `glob` | `browsing` | — |
-| `bash` / `pwsh` | **Derived from the command** (below) | — |
+| `bash` / `pwsh` | **由命令内容判定**（见下） | — |
 | `web_search` | `researching` | — |
 | `mcp__codegraph__codegraph_explore` | `code reviewing` | — |
 | `mcp__langfuse__*` | `debugging` | — |
 | `subagent` / `subagent_fork` / `workflow` / `todo_write` | `coding` | — |
-| `ask_user_question` / user messages | `communicating` | — |
-| AI replies | `ai coding` | — |
+| `ask_user_question` / 用户消息 | `communicating` | — |
+| AI 回复 | `ai coding` | — |
 | `skill` | `learning` | — |
-| Anything else | `coding` | — |
+| 其他 | `coding` | — |
 
-**Shell categories** are no longer a blanket `building` — an earlier implementation did that, and replaying 5290 shell heartbeats from a real account showed 98.7% of the reported "build time" was not building. Categories now come from the command:
+**shell 类别**不再一律记成 `building`——那是早期实现，用账号里 5290 条 shell 心跳复盘发现 98.7% 的"构建时间"其实不是构建。现在按命令本身判定：
 
-| Command | Category |
+| 命令 | 判为 |
 |---|---|
 | `ls` / `cat` / `grep` / `sed` / `head` … | `browsing` |
 | `git` / `pnpm build` / `docker build` … | `coding` / `building` |
 | `pnpm test` / `vitest` | `running tests` |
-| Unrecognised | `coding` |
+| 认不出来 | `coding` |
 
-Only the **bare subcommand** is examined, never trailing arguments (`test` inside `grep -n foo test/a.py` does not count as a test run), and wrappers like `cd … &&`, `sudo` and `npx` are stripped first.
+判定只看**裸子命令**，不看后续参数（`grep -n foo test/a.py` 里的 `test` 不会被当成跑测试），并且会先剥掉 `cd … &&`、`sudo`、`npx` 这类包装前缀。
 
-## Known limitations
+## 已知限制
 
-- **File-level granularity** — DSH tool calls carry no cursor position, so line-level detail is coarser than an IDE plugin provides;
-- **AI token accounting differs from IDE plugins**: the host reports uncached and cache-hit input as disjoint components, and the plugin sends them as separate fields, so the numbers are not directly comparable;
-- **No historical backfill** — changing `entity` / `category` shape breaks cross-version comparisons on those dimensions;
-- **Read endpoints are closed** to plugin keys (see [Development](#development)), so the plugin cannot read its own data back for validation.
+- **只追踪到文件与应用粒度相近的程度**——DSH 的工具调用没有细粒度的光标位置，WakaTime 上的行级明细不如 IDE 插件精确；
+- **DSH 侧的 AI token 口径与 IDE 不同**：宿主给的是「未命中 + 缓存命中」两个互斥分量，插件分字段上报，不与 IDE 插件的数字直接可比；
+- **历史数据不可回溯**：`entity` / `category` 的形态一旦改变，按这两个维度做跨版本对比会断裂；
+- **读端点不可用**：WakaTime 自 2026-10 起对插件 key 封锁读端点（详见[开发](#开发)），因此插件无法回读自己的数据做校验。
 
-## Development
+## 开发
 
 <details>
-<summary>Build, test and layout</summary>
+<summary>构建、测试与架构</summary>
 
 ```bash
 pnpm install
-pnpm build        # clears lib/ then rebuilds host + client
+pnpm build        # 清空 lib/ 后重建 host + client
 pnpm typecheck
-pnpm test         # vitest, 169 cases
+pnpm test         # vitest，169 个用例
 ```
 
 ```
 src/
-├── index.ts         # entry: event listeners, timers, config migration
-├── config-value.ts  # volatile-ref unwrapping and per-field validation
-├── wakatime.ts      # HTTP client: proxy, bulk upload, per-item parsing
-├── tracker.ts       # event → heartbeat conversion and merging
-├── cache.ts         # local JSONL cache with time-based trimming
-├── project.ts       # git / package.json project inference
-├── category.ts      # shell command → category
-├── language.ts      # extension → language
-├── diff.ts          # write/edit line counts
-└── types.ts         # types and constants
+├── index.ts         # 插件入口：事件监听、定时器、配置迁移
+├── config-value.ts  # volatile ref 解包与逐字段校验
+├── wakatime.ts      # HTTP 客户端：代理、批量上报、逐条状态解析
+├── tracker.ts       # 事件 → 心跳的转换与合并
+├── cache.ts         # 本地 JSONL 缓存与按时间裁剪
+├── project.ts       # git / package.json 项目名推断
+├── category.ts      # shell 命令 → 类别判定
+├── language.ts      # 扩展名 → 语言
+├── diff.ts          # write/edit 行数计算
+└── types.ts         # 类型与常量
 ```
 </details>
 
 <details>
-<summary>Bulk contract: outer 2xx + per-item statuses</summary>
+<summary>批量上报契约：外层恒 2xx + 逐条状态码</summary>
 
-The `heartbeats.bulk` response is **always 202 at the outer level**; real results live in per-item status codes inside `responses`. An implementation that only checks `response.ok` reads a fully rejected batch as a full success — rejected heartbeats neither enter the cache nor raise an error, which is plain data loss.
+`heartbeats.bulk` 的响应**外层永远 202**，真正的结果在 `responses` 数组的逐条状态码里。只判 `response.ok` 的实现会把整批被拒读成整批成功——被拒的心跳既不进缓存也不报错，是纯粹的数据丢失。
 
-| Per-item status | Handling |
+本插件的处理：
+
+| 逐条状态 | 处理 |
 |---|---|
-| `2xx` | Stored |
-| `4xx` (except 429) | Permanent failure — dropped with a warning carrying the server's reason |
-| `429` / `5xx` | Back to cache for retry |
+| `2xx` | 已落库 |
+| `4xx`（除 429） | 永久失败，丢弃并告警，带服务端原因 |
+| `429` / `5xx` | 回缓存重试 |
 
-String fields are pre-trimmed to the server's hard limits: `entity` ≤ 2083, `project` / `branch` ≤ 1024; an empty string is rejected too. A trimmed `entity` ends with `...`.
+字符串字段按服务端硬上限预先裁剪：`entity` ≤ 2083、`project` / `branch` ≤ 1024，空串同样被拒。被裁剪过的 `entity` 以 `...` 结尾。
 </details>
 
 <details>
-<summary>Cache policy</summary>
+<summary>缓存策略</summary>
 
-- Written **only on failure**, drained on success;
-- Concurrent flushes are serialised, and only heartbeats that **truly did not land** are written back (an earlier version wrote stored ones back too, causing duplicates);
-- Over the limit, the oldest are trimmed **by time** with a warning `缓存超过上限（N 条），最旧的 M 条心跳已被丢弃（from → to）` — that line means data is genuinely being lost.
+- 只在**发送失败**时写入，成功即排空；
+- 并发冲刷串行化，且只把**确实没落库**的心跳写回（早期版本会把已入库的也写回，导致重复上报）；
+- 超过上限时**按时间**裁掉最旧的，并告警 `缓存超过上限（N 条），最旧的 M 条心跳已被丢弃（from → to）`——这条出现就是真的开始丢数据了。
 </details>
 
 <details>
-<summary>AI token accounting</summary>
+<summary>AI token 口径</summary>
 
-The host's `TokenUsage` input components are **disjoint**: `inputTokens` is the uncached part only, cache hits are reported separately in `cacheReadTokens`, and billed input is the sum of the three.
+宿主的 `TokenUsage` 三个输入分量是**互斥**的：`inputTokens` 只是未命中部分，缓存命中单独记在 `cacheReadTokens`，计费输入 = 三者之和。
 
-This plugin sends the uncached part as `ai_input_tokens` and cache hits as `ai_cached_input_tokens`, and **never adds them together**; `cacheWriteTokens` has no WakaTime counterpart and is not reported.
+本插件把未命中报进 `ai_input_tokens`、缓存命中报进 `ai_cached_input_tokens`，**不把两者相加**；`cacheWriteTokens` 在 WakaTime 侧没有对应字段，不上报。
 
-Measured sample: one session billed 80.1M input of which 78.7M (98%+) was cache hits. Reporting only the uncached part makes WakaTime's Tokens two orders of magnitude smaller than a local dashboard.
+一个实测样本：某会话计费输入 80.1M，其中缓存命中 78.7M（98%+）。只报未命中的实现会让 WakaTime 的 Tokens 比本地面板小两个数量级。
 </details>
 
 <details>
-<summary>Version gate and peer ranges</summary>
+<summary>版本闸门与 peer 写法</summary>
 
-The host's `evaluatePluginCompatibility` reads only the plugin's `package.json`:
+宿主 `dsh-app-boot` 的 `evaluatePluginCompatibility` 只读插件 `package.json`，规则：
 
-| Condition | Behaviour |
+| 条件 | 行为 |
 |---|---|
-| `engines.dsh` present | **Only that range is compared**; `peerDependencies` are ignored |
-| Absent | Every `@deepseek-ai/dsh*` peer must be satisfied by the running version |
-| Comparison | `semver.satisfies(running, range, { includePrerelease: true })` |
-| Failure | Logs `Plugin … is incompatible with dsh …` and disables the row |
+| 有 `engines.dsh` | **只比较这一个区间**，`peerDependencies` 被忽略 |
+| 没有 `engines.dsh` | 每个 `@deepseek-ai/dsh*` 前缀的 peer 都要被运行版本满足 |
+| 比较方式 | `semver.satisfies(运行版本, 区间, { includePrerelease: true })` |
+| 不通过 | 打印 `Plugin … is incompatible with dsh …` 并禁用该条目 |
 
-**Write peers as an explicit range list, not `^` prefixes, and never exact versions.** Under node-semver's default semantics (no `includePrerelease`) a prerelease range only matches when a comparator carries an anchor for the same `[major.minor.patch]` tuple: `^0.2.1-rc.2` expands to `>=0.2.1-rc.2 <0.3.0-0`, whose anchors are `0.2.1` and `0.3.0` only — so `satisfies('0.2.2-rc.1', '^0.2.1-rc.2')` is **false** and the plugin gets disabled once the host moves to 0.2.2-rc.1. Spelling out `>=0.2.2-alpha.2 <0.2.3-0` is what covers it.
+**peer 要写区间枚举，不要写 `^` 前缀，更不要写精确版本。** 原因是 node-semver 默认语义（不带 `includePrerelease`）下，预发布区间只在比较器含有同一 `[major.minor.patch]` 元组锚点时才匹配：`^0.2.1-rc.2` 展开为 `>=0.2.1-rc.2 <0.3.0-0`，锚点只有 `0.2.1` 与 `0.3.0`，因此 `satisfies('0.2.2-rc.1', '^0.2.1-rc.2')` 为**假**——宿主升到 0.2.2-rc.1 后插件会被判成不兼容。显式写出 `>=0.2.2-alpha.2 <0.2.3-0` 才覆盖得住。
 
-Host 0.2.1 packages pin their dsh peers exactly to one version; copying that makes a plugin disappear on the next rc — on this machine `webhook-runtime` and `webhook-github` vanished that way.
+宿主 0.2.1 的一方包把 dsh peers 精确 pin 到同一版本（如 `@{deepseek-ai/dsh-agent}: "0.2.1-rc.2"`），插件照抄会在下一个 rc 上被整片禁用——本机日志里 `webhook-runtime` / `webhook-github` 两条就是这样消失的。
 
-**Adding a peer entry is ongoing**: one entry only covers that generation's rc plus its stable release; the next generation needs another.
+**补充 peer 枚举是持续动作**：补一项只吃得住的「该代 rc + 该代稳定版」，下一代仍需再补。
 </details>
 
 <details>
-<summary>Four version-sensitive wiring points (still true on 0.2.2)</summary>
+<summary>四个版本敏感的接线点（0.2.2 仍成立）</summary>
 
-| Wiring point | Rule |
+| 接线点 | 规则 |
 |---|---|
-| WebUI slot `plugins.bundle.config` key | Is the **package name** — not the settings namespace and not the profile entry id; a mismatch means no settings card |
-| `@deepseek-ai/dsh-client-ui-primitives` | Must stay **external**; bundling it duplicates the whole icon set |
-| Automatic settings projection | Requires `.volatile()` on Config; projection lives in the host's `dsh-app-boot` |
-| `.volatile()` fields arrive as **ref objects** | `apply()` receives `Object.freeze({ get })`, not values. They **must be unwrapped**, otherwise `api_url` produces an invalid URL, `heartbeat_interval_ms` becomes 1 ms, booleans stay truthy, string fields are dropped entirely and `cache_limit` never trims. Handled centrally in `src/config-value.ts` |
+| WebUI 槽位 `plugins.bundle.config` 的 key | 是**插件包名**，不是 settings 命名空间也不是 profile 条目 id；不匹配则没有配置卡片 |
+| `@deepseek-ai/dsh-client-ui-primitives` | 必须保持 **external**，打进包会把整套图标复制一份 |
+| 设置页自动投影 | 依赖 Config 上的 `.volatile()`，投影逻辑在宿主 `dsh-app-boot` |
+| `.volatile()` 字段是 **ref 对象** | `apply()` 收到的是 `Object.freeze({ get })` 而非值。**必须解包**，否则 `api_url` 拼出非法 URL、`heartbeat_interval_ms` 被当成 1ms、布尔恒真、字符串字段整个不发、`cache_limit` 永不裁剪。本插件统一在 `src/config-value.ts` 处理 |
 </details>
 
 <details>
-<summary>Shell category measurement</summary>
+<summary>shell 类别判定实测</summary>
 
-Replaying 5290 shell heartbeats from a real account:
+用账号里 5290 条 shell 心跳复盘：
 
-| Category | Before | After |
+| 类别 | 改动前 | 改动后 |
 |---|---|---|
 | `building` | 100.0% | 1.3% |
 | `coding` | — | 50.6% |
@@ -259,67 +263,67 @@ Replaying 5290 shell heartbeats from a real account:
 | `running tests` | — | 0.5% |
 | `debugging` | — | 0.3% |
 
-Categories use only WakaTime's authoritative set (`wakatime-cli`, `pkg/heartbeat/category.go`): there is no `deployment` and no `testing` (the right value is `running tests`), and invented words do not aggregate in the dashboard.
+类别取值只用 WakaTime 权威集合（`wakatime-cli` 的 `pkg/heartbeat/category.go`）：表里既没有 `deployment` 也没有 `testing`（正确值是 `running tests`），自造词在面板上无法聚合。
 </details>
 
 <details>
-<summary>The command heartbeat entity</summary>
+<summary>命令心跳的 entity</summary>
 
-`bash` / `pwsh` heartbeats have `type: app`. Per wakatime-cli's definition (*"AppType represents an app entity"*) the entity should be an **app name**, not a command line. Treating the whole command as the entity scattered 5281 shell heartbeats into **5158 distinct entities, 98.2% of them seen exactly once** — no aggregation value, and one keystroke away from the 2083-character limit and per-item 400s.
+`bash` / `pwsh` 心跳的 `type` 是 `app`。按 wakatime-cli 的定义（*"AppType represents an app entity"*），app 类型的 entity 应该是**应用名**而不是命令行。早期把整行命令当 entity，5281 条 shell 心跳散成 **5158 个不同 entity，98.2% 只出现过一次**——既无聚合价值，又随时可能撞上 2083 字符上限被逐条 400 拒收。
 
-It now comes from the "Terminal app name" setting (default `Terminal`); what the command does is expressed by `category`. The merge key inside the 5-second window is `entity + category`, otherwise an `ls` would overwrite a `pnpm test` from four seconds earlier under the same app name.
+现在取设置项「终端应用名」（默认 `Terminal`），命令在做什么由 `category` 表达。5 秒窗口内的合并键是 `entity + category`，否则同一应用名下一条 `ls` 会覆盖掉 5 秒前的 `pnpm test`。
 
-User message / AI reply heartbeats **deliberately keep** `dsh-session-<id>` as the entity: its cardinality is bounded by the session count and it is the only dimension that drills down by session.
+用户消息 / AI 回复类心跳**有意保留** `dsh-session-<id>` 作为 entity：基数由会话数决定（有界），且是唯一能按会话下钻的维度。
 </details>
 
 <details>
-<summary>Proxy precedence</summary>
+<summary>代理口径</summary>
 
-The outbound proxy is taken from **settings page → env vars → `~/.wakatime.cfg` → direct**, first match wins. A layer that is not a valid `http(s)` URL is **ignored with a warning** and resolution continues.
+出口代理按 **设置页 → 环境变量 → `~/.wakatime.cfg` → 直连** 的顺序取，先命中先赢。某一档不是合法 `http(s)` 地址时会被**忽略并告警**，然后继续回退。
 
-With debug on, startup logs a line `网络出口 经代理 http://…（来源：设置页）` that answers which route is actually in use. Credentials in a proxy URL are masked to `***:***` before logging.
+启动时 debug 模式会打一行 `网络出口 经代理 http://…（来源：设置页）`，直接回答"现在走了哪条"。带账号密码的代理会被脱敏成 `***:***` 再打日志。
 
-`NO_PROXY` / "No-proxy hosts" accept `*`, exact hosts and `.suffix` entries (`example.com` also matches its subdomains).
+`NO_PROXY` / 「不走代理的地址」支持 `*`、精确主机与 `.suffix`（`example.com` 也匹配其子域）。
 
-Why the plugin must read the cfg: measured on the same machine, curl direct, curl via proxy and node direct were all 20/20 while the plugin intermittently got `fetch failed` — because it was the only link not going through the proxy that was already configured in `~/.wakatime.cfg`.
+为什么插件必须读 cfg：实测同机上 curl 直连、curl 经代理、node 直连都 20/20 通，唯独插件间歇 `fetch failed`——因为它是同机上唯一不走代理的那条链路，而代理本来配在 `~/.wakatime.cfg` 里。
 </details>
 
 <details>
-<summary>Read endpoints return 403</summary>
+<summary>读端点 403：为什么不能再回读数据</summary>
 
-Since 2026-10 WakaTime answers read endpoints (`/users/current`, `/users/current/projects`, `/users/current/heartbeats`) with:
+WakaTime 自 2026-10 起对读端点（`/users/current`、`/users/current/projects`、`/users/current/heartbeats`）使用插件 key 返回：
 
 ```
 403 API Keys are only for plugins, use your personal oauth token
 ```
 
-while the **write endpoint `heartbeats.bulk` still accepts plugin keys**. This is an upstream policy change, not an auth bug in this plugin.
+而**写端点 `heartbeats.bulk` 仍接受插件 key**。这是上游策略变化，不是插件的鉴权 bug。
 
-One consequence: the "Project name" dropdown in settings depended on `/users/current/projects`, so it was permanently empty and has been removed — the field is free text now. Also, do not read that 403 as a dead key: judge the key by the write endpoint or by the failure warnings.
+后果之一：设置页曾提供的「项目名称」候选下拉依赖 `/users/current/projects`，因此永远为空，已移除，项目名称改为自由输入。排查时也别把这次 403 误读成 key 失效——判断 key 是否可用要看写端点或失败告警。
 </details>
 
 <details>
-<summary>Troubleshooting</summary>
+<summary>排障</summary>
 
-**Plugin not loaded**: does `lib/` exist? Run `pnpm build`. Any incompatibility line in the log?
+**插件没加载**：`lib/` 是否存在？`pnpm build`？日志里有没有 incompatibility 提示？
 
-**No settings card**: confirm the plugin is in the profile's bundles; fully restart `dsh web`; check the browser console.
+**设置页看不到卡片**：确认插件在 profile 的 bundles 里；完全重启 `dsh web`；看浏览器 console。
 
-**Heartbeats not sending**, in this order (an earlier version went silent for a full week):
+**心跳没发出去**，按这个顺序查（本插件曾因此静默断流一整周）：
 
-1. **Cache before logs** — `~/.dsh/wakatime/heartbeat-cache.jsonl` is only written on failure. Persistent growth or pinning at the limit means sends are failing and older heartbeats are being pushed out; that activity is unrecoverable.
-2. **Read the warnings; debug is not required** — failures always warn with a reason and are written to **both the logger and console** (this host's `ctx.logger` never reaches the stdout capture file, so logger-only means no log at all — the direct reason two silent outages went unnoticed). Key lines: `上报失败…`, `缓存超过上限…已被丢弃`, `N/M 条心跳被逐条拒绝并已丢弃…`, `cache flush failed…`.
-3. **After a host upgrade, look for the "config field is not a usable value" warning** — a volatile ref used as a value fails silently in several ways (see the wiring points above).
-4. **Confirm the key** — `未配置 WakaTime API Key` = no usable value in any layer; `WakaTime API Key 无效` = the server returned 401; `上报失败…（cause: …）` = transport. Diagnostics carry `cause` (`ECONNRESET` / `ETIMEDOUT` / `ENOTFOUND`…), not just `fetch failed`.
-5. **Suspect you are not running your code? Check the build fingerprint** — `apply called; artifact mtime=… pid=…` answers which build this process loaded. Hot reload can leave an old fiber sending with old code; restart DSH fully when behaviour disagrees with the source.
-6. **Payload length is hard-validated** — if "per-item rejection" warnings persist, some field is outside the trimming coverage; paste the server's reason from the warning into an issue.
+1. **先看缓存，再看日志**——`~/.dsh/wakatime/heartbeat-cache.jsonl` 只在失败时写入。持续增长或长期顶在上限 = 发送在持续失败，越旧的心跳被挤掉越多，那段活动已不可恢复。
+2. **读告警，不需要开 debug**——失败一律 warn 并带原因，且 **logger + console 双写**（本宿主的 `ctx.logger` 不进 stdout 捕获文件，只走 logger 等于没有日志，这是两次静默断流没人发现的直接原因）。关键告警：`上报失败…`、`缓存超过上限…已被丢弃`、`N/M 条心跳被逐条拒绝并已丢弃…`、`cache flush failed…`。
+3. **升级宿主后先看有没有「配置字段不是可用值」告警**——volatile ref 当值用会以多种方式静默失效（见上文接线点）。
+4. **确认 key 可用**——`未配置 WakaTime API Key` = 三层都没有可用值；`WakaTime API Key 无效` = 服务端 401；`上报失败…（cause: …）` = 传输层问题。诊断信息会带 `cause`（`ECONNRESET` / `ETIMEDOUT` / `ENOTFOUND`…），不再只有一句 `fetch failed`。
+5. **怀疑「跑的不是你改的代码」时看构建指纹**——日志里 `apply called; artifact mtime=… pid=…` 直接回答这个进程载入了哪次构建。热重载可能留下旧 fiber 继续以旧代码发送，行为与代码不一致时先完全重启 DSH。
+6. **载荷长度是硬校验**——仍出现「逐条拒绝」告警，说明有字段不在裁剪覆盖范围内，把告警里的服务端原因贴到 issue。
 </details>
 
-## References
+## 参考
 
-- [WakaTime API docs](https://wakatime.com/developers)
-- [wakatime-cli](https://github.com/wakatime/wakatime-cli) — authoritative source for categories and field semantics
+- [WakaTime API 文档](https://wakatime.com/developers)
+- [wakatime-cli](https://github.com/wakatime/wakatime-cli) —— 类别集合与字段语义的权威来源
 
-## License
+## 许可
 
 MIT © wujue
